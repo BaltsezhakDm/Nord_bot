@@ -1,0 +1,13 @@
+[Unit]
+Description=nord_bot.service - Бот для бонусной программы Kosplace
+After=network.target
+
+[Service]
+User=root
+Group=www-data
+WorkingDirectory=/home/Nord_bot
+Environment="PATH=/home/Nord_bot/venv/bin"
+ExecStart=/home/Nord_bot/venv/bin/python bot.py
+
+[Install]
+WantedBy=multi-user.target

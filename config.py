@@ -1,0 +1,7 @@
+TOKEN = '5941379785:AAHNCfXjw6gRZk3st1-HhIJgunVJrzCyj4k'
+adminTOKEN = '6289066017:AAF4OVPrMm73s74Nn9dyQSMjwnaSD6divfw'
+adminLogin = 'mx.samarin@gmail.com'
+adminPassword = 'Fontanka86'
+login = 'kosplace'
+password = 'e0LDx023'
+http = 'kosplace'
