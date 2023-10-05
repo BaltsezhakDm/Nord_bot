@@ -1,0 +1,28 @@
+jwt_get:crossing_spare:
+  variables:
+    VAULT_ROLE: 'crossing_spare'
+    VAULT_KV_PATH: 'crosser/crossing_spare/dev/env'
+    VAULT_MAP_PARAMS: " "
+  extends:
+    - .jwt_get
+
+docker:build:dev:
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "dev" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      when: always
+    - when: never
+  extends:
+    - .build_template
+
+docker:deploy_app:dev:
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "dev" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      when: always
+    - when: never  
+  cache:
+    key: vault-env-${CI_COMMIT_SHORT_SHA}
+    paths: 
+      - ./${VAULT_FILENAME}
+    policy: pull
+  extends:
+    - .deploy_app_template
