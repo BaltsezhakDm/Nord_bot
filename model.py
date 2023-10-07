@@ -3,46 +3,48 @@
 и функции работы с ней
 '''
 
-from sqlalchemy import create_engine, Column, MetaData, Table, Integer, DateTime, String, Boolean
-from sqlalchemy import select, insert
+import sqlalchemy as models
+from sqlalchemy import create_engine, Column
+from sqlalchemy.orm import declarative_base, Session
+import os
 
-engine = create_engine('sqlite:///customer.db')
+user_db = os.getenv('user_db')
+password_db = os.getenv('password_db')
+database = os.getenv('database')
+host_db = os.getenv('host_db')
 
-meta_data = MetaData()
+SQLALCHEMY_DATABASE_URL = f'postgresql://{user_db}:{password_db}@{host_db}/{database}'
 
-customer= Table(
-    'customer',
-    meta_data,
-    Column('id', Integer, primary_key=True, autoincrement=True),
-    Column('telegram_id', Integer),
-    Column('qresto_id', Integer),
-    Column('name', String, nullable=True),
-    Column('phone_number', Integer, nullable=True),
-    Column('news', Boolean, nullable=True)
-    )
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
+Base = declarative_base()
 
-try:
-    meta_data.create_all(engine)
-except:
-    pass
+
+class Customers(Base):
+
+    __tablename__ = 'customers'
+
+    id = Column(models.BigInteger,primary_key=True)
+    telegram_id = Column(models.String)
+    qresto_id = Column(models.Integer)
+    name = Column(models.String, nullable=True)
+    phone_number = Column(models.String, nullable=True)
+    news = Column(models.Boolean, nullable=True)
+
 
 
 def add_customer(telegram_id, qresto_id, name = None, news=False, phone_number=None):
     '''Cоздания пользователя'''
-    with engine.connect() as conn:
-        stmt = insert(customer).values(
-            telegram_id=telegram_id,
+    with Session(engine) as session:
+        customer = Customers(telegram_id=str(telegram_id),
             qresto_id=qresto_id,
             name=name,
-            phone_number=phone_number,
-            news=news
-            )
-        conn.execute(stmt)
-        conn.commit()
+            phone_number=str(phone_number),
+            news=news)
+        session.add(customer)
+        session.commit()
+
 
 def find_customer(telegram_id):
     '''Поиск пользователя по telegram_id'''
-    with engine.connect() as conn:
-        stmt = select(customer).where(customer.c.telegram_id==telegram_id)
-        exec = conn.execute(stmt)
-        return exec.all()
+    with Session(engine) as session:
+        return session.query(Customers).filter(Customers.telegram_id==str(telegram_id)).all()

@@ -3,14 +3,19 @@ from aiogram import Bot, Dispatcher, executor, types
 from aiogram.utils import executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-import config
+import os
 import api
 from model import find_customer, add_customer
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=config.TOKEN)
-admin_bot = Bot(token=config.adminTOKEN)
+token = os.getenv('token_telegram')
+login_api = os.getenv('login_api')
+password_api = os.getenv('password_api')
+
+
+bot = Bot(token=token)
+#admin_bot = Bot(token=config.adminTOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
@@ -28,7 +33,7 @@ async def show_hello(message: types.Message):
 
     # поиск в локальной БД гостя по telegram_id
     if find_customer(message.chat.id):
-        await message.answer(text='С возвращением, {}'.format(message.chat.first_name), reply_markup=keyboard_main)
+        await message.answer(text=f'С возвращением, {message.chat.first_name}', reply_markup=keyboard_main)
     else:
         key1 = types.KeyboardButton(
             text='Новости + бонусы за них', callback_data='set_news')
@@ -54,7 +59,7 @@ async def show_hello(message: types.Message):
 async def contact(message: types.Message):
     if message.contact is not None:
         phone_number = message.contact.phone_number
-        guest = api.CustomerOperation()
+        guest = api.CustomerOperation(login=login_api, password=password_api)
         get_guest = guest.getCustomer(phone_number=phone_number[1:])
         if 'errorCode' in get_guest.keys():
             customer = guest.createCustomer(firstName=message.chat.first_name, telegram_id=message.chat.id, phone_number=phone_number[1:])
@@ -78,7 +83,7 @@ async def show_history(message: types.Message, page=1, previous_message=None):
     customer = find_customer(message.chat.id)
     if customer:
         # создание объекта гость с данными из QuickResto
-        guest = api.Crm_info()
+        guest = api.Crm_info(login=login_api, password=password_api)
         history = guest.client_history(customer[0].phone_number)
         if len(history) > 6 and type(history) == type(list()):
             pages_count = len(history) // 6 + 1
@@ -113,7 +118,7 @@ async def show_balance(message: types.Message):
     customer = find_customer(message.chat.id)
     if customer:
         # создание объекта гость с данными из QuickResto
-        guest = api.Crm_info()
+        guest = api.Crm_info(login=login_api, password=password_api)
         await message.answer(text='{}, у вас {} баллов'.format(customer[0].name, guest.client_balance(customer[0].phone_number)))
     else:
         await message.answer(text='Вы не вошли. Введите команду /start')
@@ -127,7 +132,7 @@ async def show_qr(message: types.Message):
     customer = find_customer(message.chat.id)
     if customer:
         # базовая информация о госте
-        guest = api.Crm_info()
+        guest = api.Crm_info(login=login_api, password=password_api)
         await message.answer_photo(photo=guest.qr_code(customer[0].phone_number))
     else:
         await message.answer(text='Вы не вошли. Введите команду /start')
@@ -143,7 +148,7 @@ async def call_info(call: types.CallbackQuery):
         await bot.answer_callback_query(call.id)
 
     if call.data == 'set_news':
-        guest = api.CustomerOperation()
+        guest = api.CustomerOperation(login=login_api, password=password_api)
         if 'errorCode' in guest.getCustomer(telegram_id=call.from_user.id).keys():
             customer = guest.createCustomer(
                 firstName=call.from_user.first_name, telegram_id=call.from_user.id)
@@ -157,7 +162,7 @@ async def call_info(call: types.CallbackQuery):
             await bot.answer_callback_query(call.id)
 
     if call.data == 'only_bonuses':
-        guest = api.CustomerOperation()
+        guest = api.CustomerOperation(login=login_api, password=password_api)
         if 'errorCode' in guest.getCustomer(telegram_id=call.from_user.id).keys():
             customer = guest.createCustomer(
                 firstName=call.from_user.first_name, telegram_id=call.from_user.id)

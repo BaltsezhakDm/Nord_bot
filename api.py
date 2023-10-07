@@ -5,8 +5,6 @@ import datetime
 import time
 import os
 
-import config
-
 
 class Customer():
     '''Базовая информация об клиентах'''
@@ -38,9 +36,12 @@ class Api():
         'Connection': 'keep-alive',
         'Content-Type': 'application/json',
     }
-    # url для входа в API QuickResto
-    URL = 'https://{login}.quickresto.ru/platform/online/'.format(
-        login=config.login)
+
+    def __init__(self, login, password) -> None:
+        self.login = login
+        self.password = password
+        self.url = f'https://{login}.quickresto.ru/platform/online/'
+
 
     def _datetime_format(self, date) -> str:
         '''Преобразование даты и времени из QickResto'''
@@ -55,7 +56,7 @@ class Api():
         '''Post запрос в API QuickResto и возврат в json формате'''
         response = requests.post(
             url=url,
-            auth=(config.login, config.password),
+            auth=(self.login, self.password),
             headers=self.headers,
             data=data,
             params=params
@@ -91,7 +92,7 @@ class CustomerOperation(Api):
     def createCustomer(self, firstName='', phone_number=None, telegram_id=None):
         ''' Создание гостя в системе QuickResto'''
 
-        url = self.URL + 'bonuses/createCustomer'
+        url = self.url + 'bonuses/createCustomer'
         tokens = list()
         if phone_number:
             tokens.append({
@@ -116,14 +117,14 @@ class CustomerOperation(Api):
     def filterCustomer(self, phone_number):
         '''Фильтрация гостей по номеру'''
 
-        url = self.URL + 'bonuses/filterCustomers'
+        url = self.url + 'bonuses/filterCustomers'
         data = {'search': phone_number}
         return self._post(url, self._json_format(data))
 
     def getCustomer(self, telegram_id=None, phone_number=None):
         '''Получить обьект Customer из API'''
 
-        url = self.URL + 'bonuses/customerInfo'
+        url = self.url + 'bonuses/customerInfo'
         if telegram_id:
             data = {
                 "customerToken": {
@@ -151,8 +152,8 @@ class CustomerOperation(Api):
 
 
     def addToken(self, id, token):
-        url_reg = 'https://kosplace.quickresto.ru/platform/j_spring_security_check'
-        data = 'j_username={}&j_password={}&j_rememberme=true'.format(config.adminLogin, config.adminPassword)
+        url_reg = f'https://{self.login}.quickresto.ru/platform/j_spring_security_check'
+        data = f'j_username={self.login}&j_password={self.password}&j_rememberme=true'
         headers = {
             'Connection': 'keep-alive',
             'Accept': 'application/json, text/plain, */*',
@@ -177,7 +178,7 @@ class Crm_info(CustomerOperation):
     def client_balance(self, phone_number) -> str:
         '''Кол-во бонусов клиента (поиск по telegram_id)'''
 
-        url = self.URL + 'bonuses/balance'
+        url = self.url + 'bonuses/balance'
         try:
             data = {
                 "customerToken": {
@@ -207,7 +208,7 @@ class Crm_info(CustomerOperation):
     def client_history(self, phone_number):
         '''История транзакций в бонусной системе клиента'''
 
-        url = self.URL + 'bonuses/operationHistory'
+        url = self.url + 'bonuses/operationHistory'
         try:
             data = {
                 "customerToken": {
@@ -248,14 +249,11 @@ class Crm_info(CustomerOperation):
             qr.add_data(phone_number)
             img = qr.make_image(fill_color="black", back_color="white")
             try:
-                img.save('files/qr/qr_%d.png' % phone_number)
-                return open('files/qr/qr_%d.png' % phone_number, 'rb')
+                img.save(f'files/qr/qr_{phone_number}.png')
+                return open(f'files/qr/qr_{phone_number}.png', 'rb')
             except:
                 os.mkdir('files')
                 os.mkdir('files/qr')
-                img.save('files/qr/qr_%d.png' % phone_number)
-                return open('files/qr/qr_%d.png' % phone_number, 'rb')
+                img.save(f'files/qr/qr_{phone_number}.png')
+                return open(f'files/qr/qr_{phone_number}.png', 'rb')
 
-
-if __name__ == '__main__':
-    pass
