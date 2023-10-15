@@ -1,7 +1,7 @@
-jwt_get:crossing_spare:
+jwt_get:nord_bot:
   variables:
-    VAULT_ROLE: 'crossing_spare'
-    VAULT_KV_PATH: 'crosser/crossing_spare/dev/env'
+    VAULT_ROLE: 'nord_bot'
+    VAULT_KV_PATH: 'crosser/nord_bot/dev/env'
     VAULT_MAP_PARAMS: " "
   extends:
     - .jwt_get
@@ -26,3 +26,7 @@ docker:deploy_app:dev:
     policy: pull
   extends:
     - .deploy_app_template
+
+jwt_remove:
+  extends:
+    - .jwt_remove

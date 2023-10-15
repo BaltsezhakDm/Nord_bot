@@ -1,0 +1,19 @@
+include:
+  - local: "_CI/gitlab_ci_files/*.yml"
+  - project: 'baltyreDevopsTeam/gitlab-actions'
+    ref: main
+    file:
+      - 'jwt/vault.yml'
+      - 'build/build.yml'
+      - 'deploy_app/deploy_app.yml'
+
+variables:
+  PROJ: "nord-bot-dev"
+  IMAGE_TAG: ${CI_PIPELINE_IID}
+  DOCKER_IMAGE_NAME: 'gitlab.baltyre.ru:5050/crosser/${CI_PROJECT_NAME}'
+  DOCKER_NET: "baltyre"
+
+stages:
+  - build
+  - deploy
+  - clear
