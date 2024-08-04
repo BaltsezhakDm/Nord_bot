@@ -4,7 +4,23 @@ import qrcode
 import datetime
 import time
 import os
+import pickle
+from aiogram.types import InputFile
+from aiogram.types import BufferedInputFile
+from aiogram.types import FSInputFile
 
+
+def save_cookies(session, filename):
+    with open(filename, 'wb') as file:
+        pickle.dump(session.cookies, file)
+
+# Функция для загрузки cookies из файла
+def load_cookies(session: requests.Session, filename):
+    try:
+        with open(filename, 'rb') as file:
+            session.cookies.update(pickle.load(file))
+    except:
+        pass
 
 class Customer():
     '''Базовая информация об клиентах'''
@@ -40,8 +56,8 @@ class Api():
     def __init__(self, login, password) -> None:
         self.login = login
         self.password = password
-        self.url = f'https://{login}.quickresto.ru/platform/online/'
-
+        self.URL = f'https://{login}.quickresto.ru/platform/online/'
+        # self.URL = f'https://{login}.quickresto.ru/api/'
 
     def _datetime_format(self, date) -> str:
         '''Преобразование даты и времени из QickResto'''
@@ -52,19 +68,39 @@ class Api():
         '''Преобразование словаря в читаемый API QR формат'''
         return str(data).replace('\'', '"').replace(' ', '').encode('utf-8')
 
-    def _post(self, url, data=None, params=None, json=True) -> requests:
-        '''Post запрос в API QuickResto и возврат в json формате'''
-        response = requests.post(
-            url=url,
+    def _get(self, module: str, params=None, json_format=True):
+        response = requests.get(
+            url=self.URL+module,
             auth=(self.login, self.password),
             headers=self.headers,
-            data=data,
             params=params
         )
-        if json:
-            return response.json()
-        else:
-            return response
+        try:
+            if json_format:
+                if response.get('errorCode'):
+                    return False
+                return response.json()
+            else:
+                return response
+        except:
+            return response.text
+
+    def _post(self, module: str, data=None, params=None, json_format=True) -> requests:
+        '''Post запрос в API QuickResto и возврат в json формате'''
+        response = requests.post(
+            url=self.URL+module,
+            auth=(self.login, self.password),
+            headers=self.headers,
+            data=json.dumps(data, ensure_ascii=False).encode('utf8'),
+            params=params
+        )
+        try:
+            if json_format:
+                return response.json()
+            else:
+                return response
+        except:
+            return response.text
 
     def _save_json(self, response) -> None:
         '''Сохранение данных из API в json формате'''
@@ -85,6 +121,194 @@ class Api():
                 data['type'], data['amount'], self._datetime_format(data['regTime'])))
         return text
 
+
+class Office:
+    def __init__(self, login, password) -> None:
+        self.error = 0
+        self.URL = 'https://kosplace.quickresto.ru/platform/'
+        self.session = requests.Session()
+        load_cookies(self.session, 'cookies.pkl')
+        self.login = login
+        self.password = password
+
+
+    def log_in(self):
+        resp = self.session.post(
+            self.URL + 'j_spring_security_check',
+            data = f'j_username={self.login}&j_password={self.password}&j_rememberme=true',
+            headers = {
+                'Connection': 'keep-alive',
+                'Accept': 'application/json, text/plain, */*',
+                'Content-Type': 'application/x-www-form-urlencoded',
+            }
+        )
+        if resp.status_code == 401:
+            print('Логин или пароль')
+        save_cookies(self.session, 'cookies.pkl')
+        # self.save_cookie(response.cookies)
+       
+
+    def create_token(self, client_id, phone_number):
+
+        response = self.session.post(
+            self.URL + 'data/crm.customer.tokens/create',
+            params={
+                'ownerContextId': client_id,
+                'ownerContextClassName': 'ru.edgex.quickresto.modules.crm.customer.CrmCustomer',
+                'businessDayOffsetInMs': 0,
+                'timeZone': -180
+            },
+            data=json.dumps({
+                "className":"ru.edgex.quickresto.modules.crm.customer.tokens.CrmToken",
+                "type":"card",
+                "entry":"barCode",
+                "key": str(phone_number)})
+        )
+
+        if response.status_code == 401 and self.error == 0:
+            self.error += 1
+            self.log_in()
+            time.sleep(1)
+            self.create_token(client_id, phone_number)
+
+        self.error = 0
+        return response
+
+
+class CRM(Api):
+
+    def find_client(self, search: str):
+        response = self._post(
+            module='bonuses/filterCustomers', data={'search': search})
+
+        if response.get('errorCode'):
+            return False
+        if response['customers'] == []:
+            return False
+        return response['customers'][0]
+
+    def get_client(self, client_id):
+        response = self._get(
+            module='api/read',
+            params={
+                'moduleName': 'crm.customer',
+                'className': 'ru.edgex.quickresto.modules.crm.customer.CrmCustomer',
+                'objectId': client_id}
+        )
+
+        return response
+
+    def edit(self, client_id):
+        
+        client = self._get(
+            module='api/read',
+            params={
+                'moduleName': 'crm.customer',
+                'className': 'ru.edgex.quickresto.modules.crm.customer.CrmCustomer',
+                'objectId': client_id}
+        )
+
+        # print(client)
+        data = json.loads(client)
+        data['tokens'] = [
+            {"type":"phone","entry":"barCode","key":"9213215511","id":1207}
+        ]
+        data['firstName'] = 'Тестовый измененный пользователь'
+
+        new_data = self._post(
+            module='api/update',
+            params={
+                'moduleName': 'crm.customer',
+                'className': 'ru.edgex.quickresto.modules.crm.customer.CrmCustomer'
+            },
+            data=data
+        )
+        print(new_data)
+
+    def get_info(self):
+        response = self._post(
+            'bonuses/customerInfo',
+            data={"customerToken": {"type": "card",
+                                    "entry": "barCode", "key": "9969290700"}}
+        )
+        return response
+
+    def get_balance(self, phone_number):
+        response = self._post(
+            'bonuses/balance',
+            data={
+                "customerToken": {"type": "card", "entry": "barCode", "key": str(phone_number)},
+                "accountType": {'accountGuid': 'bonus_account_type-1'}}
+        )
+        return response['accountBalance']['available']
+
+    def get_history(self, phone_number):
+        response = self._post(
+            'bonuses/operationHistory',
+            data={
+                "customerToken": {"type": "card", "entry": "barCode", "key": str(phone_number)},
+                "accountType": {'accountGuid': 'bonus_account_type-1'}}
+        )
+        return self._format_history(response.get('transactions'))
+
+    def create_token(self, phone_number):
+
+        response = self._post(
+            'api/create',
+            params={
+                "ownerContextId": 15566,
+                'ownerContextClassName': 'ru.edgex.quickresto.modules.crm.customer.CrmCustomer',
+                'moduleName': 'crm.customer.tokens',
+                'className': 'ru.edgex.quickresto.modules.crm.customer.tokens.CrmToken'},
+            data={'type': 'card',
+                  'entry': 'barCode',
+                  'key': str(phone_number)},
+        )
+        return response
+
+    def create(self, name, phone_number, telegram_id):
+
+        user = {
+            'firstName': name,
+            'contactMethods': [{
+                'type': 'phoneNumber',
+                'value': str(phone_number)
+            }],
+        }
+
+        response = self._post(
+            'api/create',
+            params={'moduleName': 'crm.customer',
+                    'className': 'ru.edgex.quickresto.modules.crm.customer.CrmCustomer'},
+            data=user
+        )
+        return response
+    
+    def qr_code(self, phone_number):
+        '''Формирование QR кода'''
+        try:
+            open(f'files/qr/qr_{phone_number}.png', 'rb')
+            text_file = FSInputFile(f'files/qr/qr_{phone_number}.png', 'qr')
+            return text_file
+        except:
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(phone_number)
+            img = qr.make_image(fill_color="black", back_color="white")
+            try:
+                img.save(f'files/qr/qr_{phone_number}.png')
+                text_file = FSInputFile(f'files/qr/qr_{phone_number}.png', 'qr')
+                return text_file
+            except:
+                os.mkdir('files')
+                os.mkdir('files/qr')
+                img.save(f'files/qr/qr_{phone_number}.png')
+                text_file = FSInputFile(f'files/qr/qr_{phone_number}.png', 'qr')
+                return text_file
 
 class CustomerOperation(Api):
     '''Операции с клиентсикими обьектами'''
@@ -136,11 +360,11 @@ class CustomerOperation(Api):
             try:
                 data = {
                     "customerToken": {
-                    'type': 'phone',
-                    'entry': 'manual',
-                    'key': self.filterCustomer(phone_number)['customers'][0]['contactMethods'][0]['value'],
+                        'type': 'phone',
+                        'entry': 'manual',
+                        'key': self.filterCustomer(phone_number)['customers'][0]['contactMethods'][0]['value'],
                     }
-                    }
+                }
             except:
                 data = {
                     "customerToken": {
@@ -150,7 +374,6 @@ class CustomerOperation(Api):
                     }}
         return self._post(url, self._json_format(data))
 
-
     def addToken(self, id, token):
         url_reg = f'https://{self.login}.quickresto.ru/platform/j_spring_security_check'
         data = f'j_username={self.login}&j_password={self.password}&j_rememberme=true'
@@ -158,16 +381,17 @@ class CustomerOperation(Api):
             'Connection': 'keep-alive',
             'Accept': 'application/json, text/plain, */*',
             'Content-Type': 'application/x-www-form-urlencoded',
-            }
+        }
         reg = requests.post(url_reg, data=data, headers=headers)
         cookies = reg.cookies
         time.sleep(1)
-        url = 'https://kosplace.quickresto.ru/platform/data/crm.customer.tokens/create?ownerContextId=%s&ownerContextClassName=ru.edgex.quickresto.modules.crm.customer.CrmCustomer&businessDayOffsetInMs=0&timeZone=-180' %id
-        data_2='{"className":"ru.edgex.quickresto.modules.crm.customer.tokens.CrmToken","type":"card","entry":"barCode","key":"%s"}' %token
+        url = 'https://kosplace.quickresto.ru/platform/data/crm.customer.tokens/create?ownerContextId=%s&ownerContextClassName=ru.edgex.quickresto.modules.crm.customer.CrmCustomer&businessDayOffsetInMs=0&timeZone=-180' % id
+        data_2 = '{"className":"ru.edgex.quickresto.modules.crm.customer.tokens.CrmToken","type":"card","entry":"barCode","key":"%s"}' % token
         if requests.post(url, data=data_2, cookies=cookies).status_code == 200:
             return True
         else:
             return False
+
 
 class Crm_info(CustomerOperation):
     '''
@@ -185,7 +409,7 @@ class Crm_info(CustomerOperation):
                     'type': 'phone',
                     'entry': 'manual',
                     'key': int(self.filterCustomer(phone_number)['customers'][0]['contactMethods'][0]['value']),
-                    },
+                },
                 "accountType": {
                     "accountGuid": "bonus_account_type-1"
                 }
@@ -215,7 +439,7 @@ class Crm_info(CustomerOperation):
                     'type': 'phone',
                     'entry': 'manual',
                     'key': int(self.filterCustomer(phone_number)['customers'][0]['contactMethods'][0]['value']),
-                    },
+                },
                 "accountType": {
                     "accountGuid": "bonus_account_type-1"
                 }
@@ -257,3 +481,15 @@ class Crm_info(CustomerOperation):
                 img.save(f'files/qr/qr_{phone_number}.png')
                 return open(f'files/qr/qr_{phone_number}.png', 'rb')
 
+
+if __name__ == '__main__':
+    api = CRM(os.getenv('login_api'), os.getenv('password_api'))
+    lk = Office(os.getenv('login_lk'), os.getenv('password_lk'))
+    # data = lk.
+    data = api.get_balance(9969290700)
+    print(data)
+    # data = api.create('Тестовый пользоваьель 10', '9213215510', 4930400310)
+    # data = api.edit(15566)
+    # data = api.create_token('1239348398499')
+    # data = api.get_balance()
+    # print(data)

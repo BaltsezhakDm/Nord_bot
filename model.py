@@ -1,50 +1,41 @@
-'''
-Создание моделей и обьектов локальной БД,
-и функции работы с ней
-'''
+from sqlalchemy import select, BigInteger
+from sqlalchemy.orm import mapped_column, Mapped
+from sqlalchemy.ext.asyncio import AsyncSession
 
-import sqlalchemy as models
-from sqlalchemy import create_engine, Column
-from sqlalchemy.orm import declarative_base, Session
-import os
 
-user_db = os.getenv('user_db')
-password_db = os.getenv('password_db')
-database = os.getenv('database')
-host_db = os.getenv('host_db')
-
-SQLALCHEMY_DATABASE_URL = f'postgresql://{user_db}:{password_db}@{host_db}/{database}'
-
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-Base = declarative_base()
+from db import Base
 
 
 class Customers(Base):
 
     __tablename__ = 'customers'
 
-    id = Column(models.BigInteger,primary_key=True)
-    telegram_id = Column(models.String)
-    qresto_id = Column(models.Integer)
-    name = Column(models.String, nullable=True)
-    phone_number = Column(models.String, nullable=True)
-    news = Column(models.Boolean, nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger) 
+    qresto_id: Mapped[int]
+    name: Mapped[str] = mapped_column(nullable=True)
+    phone_number: Mapped[int] = mapped_column(BigInteger, nullable=True)
+    news: Mapped[bool] = mapped_column(default=False)
 
+    @staticmethod
+    async def create(db: AsyncSession, telegram_id: int, qresto_id: int, name = None, news=False, phone_number=None):
+        async with db.begin():
+            customer = Customers(
+                telegram_id=telegram_id,
+                qresto_id=qresto_id,
+                name=name,
+                phone_number=phone_number,
+                news=news)
+            db.add(customer)
+        await db.commit()
+        await db.refresh(customer)
+        return customer
 
+    @staticmethod
+    async def find(telegram_id: int, db: AsyncSession):
+        async with db.begin():
+            result = await db.execute(select(Customers).filter(Customers.telegram_id == telegram_id))
+            user = result.scalar_one_or_none()
+            return user
 
-def add_customer(telegram_id, qresto_id, name = None, news=False, phone_number=None):
-    '''Cоздания пользователя'''
-    with Session(engine) as session:
-        customer = Customers(telegram_id=str(telegram_id),
-            qresto_id=qresto_id,
-            name=name,
-            phone_number=str(phone_number),
-            news=news)
-        session.add(customer)
-        session.commit()
-
-
-def find_customer(telegram_id):
-    '''Поиск пользователя по telegram_id'''
-    with Session(engine) as session:
-        return session.query(Customers).filter(Customers.telegram_id==str(telegram_id)).all()
+    
