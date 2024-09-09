@@ -1,4 +1,4 @@
-from sqlalchemy import select, BigInteger
+from sqlalchemy import select, BigInteger, ForeignKey
 from sqlalchemy.orm import mapped_column, Mapped
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ class Customers(Base):
     qresto_id: Mapped[int]
     name: Mapped[str] = mapped_column(nullable=True)
     phone_number: Mapped[int] = mapped_column(BigInteger, nullable=True)
+    referal: Mapped[int] = mapped_column(ForeignKey('Customers'))
     news: Mapped[bool] = mapped_column(default=False)
 
     @staticmethod

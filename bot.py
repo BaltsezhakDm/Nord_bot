@@ -1,5 +1,4 @@
 import logging
-import asyncio
 import os
 from aiogram import Bot, Dispatcher
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +8,7 @@ from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from db import get_db_session, init_db
 from endpoints import router
 
-logging.basicConfig(level=logging.INFO)
+logging.disable(logging.WARNING)
 
 token = os.getenv('token')
 
