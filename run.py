@@ -5,6 +5,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from subprocess import Popen
 
+
 class RestartOnChangeHandler(FileSystemEventHandler):
     def __init__(self, script_path):
         self.script_path = script_path

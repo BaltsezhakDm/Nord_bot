@@ -1,5 +1,5 @@
 from sqlalchemy import select, BigInteger, ForeignKey
-from sqlalchemy.orm import mapped_column, Mapped
+from sqlalchemy.orm import mapped_column, Mapped, relationship
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -15,18 +15,28 @@ class Customers(Base):
     qresto_id: Mapped[int]
     name: Mapped[str] = mapped_column(nullable=True)
     phone_number: Mapped[int] = mapped_column(BigInteger, nullable=True)
-    referal: Mapped[int] = mapped_column(ForeignKey('Customers'))
+    referal_id: Mapped[int] = mapped_column(ForeignKey('customers.id'), nullable=True)
     news: Mapped[bool] = mapped_column(default=False)
+    place_id: Mapped[int] = mapped_column(ForeignKey('places.id'), nullable=True)
+
+    place: Mapped['Places'] = relationship("Places", back_populates='customers')
+    referal: Mapped['Customers'] = relationship("Customers", remote_side=[id], back_populates='referals')
+    referals: Mapped[list['Customers']] = relationship("Customers", back_populates='referal')
 
     @staticmethod
-    async def create(db: AsyncSession, telegram_id: int, qresto_id: int, name = None, news=False, phone_number=None):
+    async def create(db: AsyncSession, telegram_id: int, 
+                     qresto_id: int, name = None, news=False, 
+                     phone_number=None, place_id=None, referal_id=None ):
         async with db.begin():
             customer = Customers(
                 telegram_id=telegram_id,
                 qresto_id=qresto_id,
                 name=name,
                 phone_number=phone_number,
-                news=news)
+                news=news,
+                place_id=place_id,
+                referal_id=referal_id
+                )
             db.add(customer)
         await db.commit()
         await db.refresh(customer)
@@ -40,3 +50,22 @@ class Customers(Base):
             return user
 
     
+class Places(Base):
+
+    __tablename__ = 'places'
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(unique=True)
+
+    customers: Mapped[list['Customers']] = relationship('Customers', back_populates='place')
+
+
+    @staticmethod
+    async def create(db: AsyncSession, name: str):
+        async with db.begin():
+            place = Places(name=name)
+            db.add(place)
+            try:
+                await db.commit()
+            except:
+                await db.rollback()

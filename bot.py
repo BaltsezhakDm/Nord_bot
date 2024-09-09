@@ -6,9 +6,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 
 from db import get_db_session, init_db
+from model import Places
 from endpoints import router
 
-logging.disable(logging.WARNING)
+logging.basicConfig(level=logging.DEBUG)
 
 token = os.getenv('token')
 
@@ -39,8 +40,11 @@ dp.include_router(router)
 
 
 async def on_startup():
-    await init_db()
+    session = await get_db_session()
+    await Places.create(session, 'Комендантский 65')
+    await Places.create(session, 'Бородинская 2\86')
+    # await init_db()
 
 if __name__ == '__main__':
-    # dp.startup.register(on_startup)
+    dp.startup.register(on_startup)
     dp.run_polling(bot, skip_updates=True)

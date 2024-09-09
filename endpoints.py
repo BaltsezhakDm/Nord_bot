@@ -1,14 +1,19 @@
 from aiogram import types, F
+import logging
 from functools import wraps
 from aiogram.utils.deep_linking import create_start_link
 from aiogram.filters import CommandStart
 from aiogram.filters import Command
 from api import CRM, Office
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from aiogram.fsm.context import FSMContext
 import os
-from utils import encode_user_id, decode_user_id
+from utils import encode_user_id, decode_user_id, encode_json, decode_json
+from fsm import Form
+from logger import setup_logger
 
-from model import Customers
+from model import Customers, Places
 
 from aiogram import Router
 
@@ -17,8 +22,7 @@ password_api = os.getenv('password_api')
 login_lk = os.getenv('login_lk')
 password_lk = os.getenv('password_lk')
 
-
-
+logger = setup_logger()
 router = Router(name=__name__)
 
 api = CRM(login=login_api, password=password_api)
@@ -55,16 +59,27 @@ def login_required(func):
 
 
 @router.message(CommandStart())
-async def show_hello(message: types.Message, session: AsyncSession):
+async def show_hello(message: types.Message, session: AsyncSession, state: FSMContext):
     '''Сообщение при старте бота'''
-
-    ref_link = None
+    await state.set_state(Form.ref)
     start_link = message.md_text.split()
     if len(start_link) == 2:
-        ref_link = decode_user_id(str(start_link[1]))
+        logger.debug(f'Ref link: {start_link[1]}')
+        try:
+            place = decode_json(str(start_link[1]))
+            if isinstance(place, dict):
+                place = place['place']
+            logger.debug(f'(place): {place}')
+            await state.update_data(place_id=place, user_id=None)
+        except:
+            user_id = decode_user_id(str(start_link[1]))
+            logger.debug(f'(user): {user_id}')
+            await state.update_data(place_id=None, user_id=user_id)
+
 
     client = await Customers.find(message.chat.id, db=session)
     if client:
+        await state.clear()
         await message.answer(text=f'С возвращением, {message.chat.first_name}!', reply_markup=keyboard_main)
     else:
         button_phone = types.KeyboardButton(text="Телефон",
@@ -76,18 +91,23 @@ async def show_hello(message: types.Message, session: AsyncSession):
 
 
 @router.message(F.contact)
-async def contact(message: types.Message, session: AsyncSession):
+async def contact(message: types.Message, session: AsyncSession, state: FSMContext):
     if message.contact:
+        logger.debug(f'Contact: {message.contact.phone_number}')
+        await state.set_state(Form.number)
+        data = await state.get_data()
+        logger.debug(f'Data: {data}')
         phone_number = int(message.contact.phone_number[-10:])
         client = api.find_client(phone_number)
         if client:
             await Customers.create(
                 session, message.chat.id, int(client['id']),
                 f"{client.get('firstName')} {client.get('lastName')}",
-                phone_number=phone_number)
+                phone_number=phone_number, place_id=data.get('place_id'), referal_id=data.get('user_id'))
             if client['tokens'] == [] or str(phone_number) not in [token['key'] for token in client['tokens']]:
                 lk.create_token(client.get('id'), phone_number)
 
+            await state.clear()
             await message.answer('Ваш номер уже зарегистрирован!', reply_markup=keyboard_main)
         else:
             full_name = f'{message.from_user.first_name} {message.from_user.last_name}'
@@ -98,10 +118,13 @@ async def contact(message: types.Message, session: AsyncSession):
 
                 await Customers.create(
                     session, message.chat.id, new_client.get('id'), full_name,
-                    phone_number=phone_number)
+                    phone_number=phone_number, place_id=data.get('place_id'), referal_id=data.get('user_id'))
 
                 lk.create_token(new_client.get('id'), phone_number)
+
+            await state.clear()
             await message.answer('Успешная регистрация!', reply_markup=keyboard_main)
+    await state.clear()
 
 
 @router.message(Command('ref'))
@@ -151,6 +174,17 @@ async def show_balance(message: types.Message, session: AsyncSession, client: Cu
 
     balance = api.get_balance(client.phone_number)
     await message.answer(text='{}, у вас {} баллов'.format(client.name, balance))
+
+
+@router.message(Command('placeQR'))
+async def place_qr(message: types.Message, session: AsyncSession):
+    
+    places = await session.scalars(select(Places))
+    for place in places.all():
+        await message.answer(text=place.name)
+        crypt = encode_json({'place': place.id})
+        link = await create_start_link(message.bot, '')
+        await message.answer(text=link + crypt)
 
 
 @router.message(Command('qr'))

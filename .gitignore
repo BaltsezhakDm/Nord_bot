@@ -4,3 +4,4 @@ files/qr/*
 key_test.sh
 key.sh
 cookies.pkl
+aiogram_debug.log
