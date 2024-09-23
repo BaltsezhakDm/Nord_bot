@@ -49,6 +49,13 @@ class Customers(Base):
             user = result.scalar_one_or_none()
             return user
 
+    @staticmethod
+    async def find_by_phone_number(phone_number: int, db: AsyncSession):
+        async with db.begin():
+            result = await db.execute(select(Customers).filter(Customers.phone_number == phone_number))
+            user = result.scalar_one_or_none()
+            return user
+
     
 class Places(Base):
 

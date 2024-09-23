@@ -15,12 +15,15 @@ def save_cookies(session, filename):
         pickle.dump(session.cookies, file)
 
 # Функция для загрузки cookies из файла
+
+
 def load_cookies(session: requests.Session, filename):
     try:
         with open(filename, 'rb') as file:
             session.cookies.update(pickle.load(file))
     except:
         pass
+
 
 class Customer():
     '''Базовая информация об клиентах'''
@@ -131,12 +134,11 @@ class Office:
         self.login = login
         self.password = password
 
-
     def log_in(self):
         resp = self.session.post(
             self.URL + 'j_spring_security_check',
-            data = f'j_username={self.login}&j_password={self.password}&j_rememberme=true',
-            headers = {
+            data=f'j_username={self.login}&j_password={self.password}&j_rememberme=true',
+            headers={
                 'Connection': 'keep-alive',
                 'Accept': 'application/json, text/plain, */*',
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -146,7 +148,6 @@ class Office:
             print('Логин или пароль')
         save_cookies(self.session, 'cookies.pkl')
         # self.save_cookie(response.cookies)
-       
 
     def create_token(self, client_id, phone_number):
 
@@ -159,9 +160,9 @@ class Office:
                 'timeZone': -180
             },
             data=json.dumps({
-                "className":"ru.edgex.quickresto.modules.crm.customer.tokens.CrmToken",
-                "type":"card",
-                "entry":"barCode",
+                "className": "ru.edgex.quickresto.modules.crm.customer.tokens.CrmToken",
+                "type": "card",
+                "entry": "barCode",
                 "key": str(phone_number)})
         )
 
@@ -173,6 +174,74 @@ class Office:
 
         self.error = 0
         return response
+    
+    def _get_credit_account(self, client_id: int):
+        url = "data/crm.accounting.account/select"
+        params = {
+            "start": 0,
+            "count": 150,
+            "mode": "bonuses",
+            "ownerContextId": client_id,
+            "ownerContextClassName": "ru.edgex.quickresto.modules.crm.customer.CrmCustomer",
+            "businessDayOffsetInMs": 0,
+            "timeZone": -180
+        }
+        response = self.session.post(
+            url=self.URL + url,
+            params=params
+        )
+        if response.status_code == 401 and self.error == 0:
+            self.error += 1
+            self.log_in()
+            time.sleep(0.5)
+            response = self._get_credit_account(client_id)
+        self.error = 0
+        if response.status_code == 200:
+            data = response.json()
+            for obj in data.get('ds'):
+                try:
+                    if obj['object']['accountType']['accountGuid'] == 'bonus_account_type-1':
+                        return obj["object"]["id"]
+                except Exception as e:
+                    return None
+
+        return None
+
+
+    def add_credit(self, client_id: int, amount: int):
+        bonus_id = self._get_credit_account(client_id)
+        if not bonus_id:
+            return None
+        url = "data/crm.accounting.account/action"
+        params = {
+            "businessDayOffsetInMs": "0",
+            "mode": "bonuses",
+            "timeZone": "-180"
+        }
+        data = json.dumps({
+            "actionName": "accountCredit",
+            "data": {
+                "className":
+                "accountCreditModal",
+                "ownerContextIds": [bonus_id],
+                "amount": amount,
+                "timeZone": -180},
+            "ids": [bonus_id],
+            "owner": {
+                "ownerContextId": client_id,
+                "ownerContextClassName":
+                "ru.edgex.quickresto.modules.crm.customer.CrmCustomer"
+            }}
+        )
+        response = self.session.post(
+            url=self.URL + url,
+            params=params,
+            data=data
+        )
+        if response.status_code == 200:
+            return response.json()
+        return response.text
+
 
 
 class CRM(Api):
@@ -199,7 +268,7 @@ class CRM(Api):
         return response
 
     def edit(self, client_id):
-        
+
         client = self._get(
             module='api/read',
             params={
@@ -211,7 +280,7 @@ class CRM(Api):
         # print(client)
         data = json.loads(client)
         data['tokens'] = [
-            {"type":"phone","entry":"barCode","key":"9213215511","id":1207}
+            {"type": "phone", "entry": "barCode", "key": "9213215511", "id": 1207}
         ]
         data['firstName'] = 'Тестовый измененный пользователь'
 
@@ -225,11 +294,20 @@ class CRM(Api):
         )
         print(new_data)
 
-    def get_info(self):
+    def get_info(self, phone_number):
         response = self._post(
-            'bonuses/customerInfo',
+            'bonuses/getCustomer',
             data={"customerToken": {"type": "card",
-                                    "entry": "barCode", "key": "9969290700"}}
+                                    "entry": "barCode", "key": str(phone_number)}}
+        )
+        return response
+    
+    def get_bonus_account(self, phone_number):
+        response = self._post(
+            'bonuses/balance',
+            data={
+                "customerToken": {"type": "card", "entry": "barCode", "key": str(phone_number)},
+                "accountType": {'accountGuid': 'bonus_account_type-1'}}
         )
         return response
 
@@ -283,7 +361,7 @@ class CRM(Api):
             data=user
         )
         return response
-    
+
     def qr_code(self, phone_number):
         '''Формирование QR кода'''
         try:
@@ -301,14 +379,17 @@ class CRM(Api):
             img = qr.make_image(fill_color="black", back_color="white")
             try:
                 img.save(f'files/qr/qr_{phone_number}.png')
-                text_file = FSInputFile(f'files/qr/qr_{phone_number}.png', 'qr')
+                text_file = FSInputFile(
+                    f'files/qr/qr_{phone_number}.png', 'qr')
                 return text_file
             except:
                 os.mkdir('files')
                 os.mkdir('files/qr')
                 img.save(f'files/qr/qr_{phone_number}.png')
-                text_file = FSInputFile(f'files/qr/qr_{phone_number}.png', 'qr')
+                text_file = FSInputFile(
+                    f'files/qr/qr_{phone_number}.png', 'qr')
                 return text_file
+
 
 class CustomerOperation(Api):
     '''Операции с клиентсикими обьектами'''

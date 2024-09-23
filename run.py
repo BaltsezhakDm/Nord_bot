@@ -29,7 +29,7 @@ class RestartOnChangeHandler(FileSystemEventHandler):
             self.restart_bot()
 
 if __name__ == "__main__":
-    script_path = 'bot.py'  # Укажите путь до файла с вашим ботом
+    script_path = 'app/bot.py'  # Укажите путь до файла с вашим ботом
     event_handler = RestartOnChangeHandler(script_path)
     observer = Observer()
     observer.schedule(event_handler, path='.', recursive=True)
