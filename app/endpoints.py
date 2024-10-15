@@ -16,7 +16,7 @@ from fsm import Form, AskForm
 from utils import encode_user_id, encode_json, check_referal
 from logger import setup_logger
 from auth import login_required_callback, login_required
-from keyboard import keyboard_main, keyboard_back, keyboard_menu, keyboard_social, keyboard_review
+from keyboards import keyboard_main, keyboard_back, keyboard_menu, keyboard_social, keyboard_review, clean_keyboard
 
 
 logger = setup_logger()
@@ -72,7 +72,8 @@ async def contact(message: types.Message, session: AsyncSession, state: FSMConte
                 lk.create_token(client.get('id'), phone_number)
 
             await state.clear()
-            await message.answer('Ваш номер уже зарегистрирован!', reply_markup=keyboard_main)
+            await message.answer('Ваш номер уже зарегистрирован!', reply_markup=clean_keyboard)
+            await message.edit_text('Выбрете раздел:', reply_markup=keyboard_main)
         else:
             full_name = f'{message.from_user.first_name} {message.from_user.last_name or ""}'
             client_db = await Customers.find(message.chat.id, session)
@@ -88,7 +89,8 @@ async def contact(message: types.Message, session: AsyncSession, state: FSMConte
                 lk.add_credit(new_client.get('id'), 100)
 
             await state.clear()
-            await message.answer('Успешная регистрация!', reply_markup=keyboard_main)
+            await message.answer('Успешная регистрация!', reply_markup=clean_keyboard)
+            await message.edit_text('Выбрете раздел:', reply_markup=keyboard_main)
     await state.clear()
 
 

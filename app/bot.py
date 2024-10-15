@@ -4,6 +4,9 @@ from aiogram import Bot, Dispatcher
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
+from aiohttp import web
+
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from db import get_db_session, init_db
 from model import Places
@@ -43,8 +46,25 @@ async def on_startup():
     session = await get_db_session()
     await Places.create(session, 'Комендантский 65')
     await Places.create(session, 'Бородинская 2\86')
+    await bot.set_webhook(f"https://dashboard.kosplace.ru/telegram")
+
     # await init_db()
 
-if __name__ == '__main__':
+def main() -> None:
+
     dp.startup.register(on_startup)
-    dp.run_polling(bot, skip_updates=True)
+
+    app = web.Application()
+
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_requests_handler.register(app, path='/telegram')
+
+    setup_application(app, dp, bot=bot)
+
+    web.run_app(app, host='0.0.0.0', port='8000')
+
+if __name__ == '__main__':
+    main()

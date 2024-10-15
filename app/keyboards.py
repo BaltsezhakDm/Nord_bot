@@ -38,4 +38,6 @@ keyboard_main = types.InlineKeyboardMarkup(
 keyboard_menu = types.InlineKeyboardMarkup(inline_keyboard=[[key_borodinskaya, key_komendantskaya], [key_menu]])
 keyboard_back = types.InlineKeyboardMarkup(inline_keyboard=[[key_menu]])
 
+clean_keyboard = types.ReplyKeyboardRemove()
+
 
