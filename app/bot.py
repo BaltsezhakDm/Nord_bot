@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiohttp import web
+import asyncio
 
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
@@ -66,5 +67,15 @@ def main() -> None:
 
     web.run_app(app, host='0.0.0.0', port='8000')
 
+async def debug() -> None:
+    session = await get_db_session()
+    await Places.create(session, 'Комендантский 65')
+    await Places.create(session, 'Бородинская 2\86')
+    await dp.start_polling(bot)
+
+
 if __name__ == '__main__':
-    main()
+    if os.getenv('DEBUG', False):
+        asyncio.run(debug())
+    else:
+        main()

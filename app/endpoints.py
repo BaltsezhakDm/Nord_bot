@@ -73,7 +73,7 @@ async def contact(message: types.Message, session: AsyncSession, state: FSMConte
 
             await state.clear()
             await message.answer('Ваш номер уже зарегистрирован!', reply_markup=clean_keyboard)
-            await message.edit_text('Выбрете раздел:', reply_markup=keyboard_main)
+            await message.answer('Выбрете раздел:', reply_markup=keyboard_main)
         else:
             full_name = f'{message.from_user.first_name} {message.from_user.last_name or ""}'
             client_db = await Customers.find(message.chat.id, session)
@@ -90,7 +90,7 @@ async def contact(message: types.Message, session: AsyncSession, state: FSMConte
 
             await state.clear()
             await message.answer('Успешная регистрация!', reply_markup=clean_keyboard)
-            await message.edit_text('Выбрете раздел:', reply_markup=keyboard_main)
+            await message.answer('Выбрете раздел:', reply_markup=keyboard_main)
     await state.clear()
 
 
