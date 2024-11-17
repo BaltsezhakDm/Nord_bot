@@ -1,43 +1,35 @@
 import logging
 import os
 from aiogram import Bot, Dispatcher
-from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiohttp import web
 import asyncio
 
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-from db import get_db_session, init_db
+from db import get_db_session
 from model import Places
+from middleware import DbSessionMiddleware, LoggingMiddleware, ErrorHandlingMiddleware
 from endpoints import router
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.ERROR)
+logging.basicConfig()
+logging.getLogger('pika').setLevel(logging.ERROR)
+
 
 token = os.getenv('token')
+webhook_url = os.getenv('webhook_url')
 
 
 bot = Bot(token=token)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-class DbSessionMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event, data):
-        data['session'] = await get_db_session()
-        try:
-            return await handler(event, data)
-        except Exception as e:
-            session: AsyncSession = data.get('session')
-            await session.rollback()
-            print(e)
-        finally:
-            session: AsyncSession = data.get('session')
-            if session:
-                await session.close()
 
-
+    
 dp.update.middleware(DbSessionMiddleware())
+dp.update.middleware(LoggingMiddleware())
+dp.update.middleware(ErrorHandlingMiddleware())
 
 
 dp.include_router(router)
@@ -47,7 +39,7 @@ async def on_startup():
     session = await get_db_session()
     await Places.create(session, 'Комендантский 65')
     await Places.create(session, 'Бородинская 2\86')
-    await bot.set_webhook(f"https://dashboard.kosplace.ru/telegram")
+    await bot.set_webhook(webhook_url)
 
     # await init_db()
 
@@ -68,6 +60,7 @@ def main() -> None:
     web.run_app(app, host='0.0.0.0', port='8000')
 
 async def debug() -> None:
+    await bot.delete_webhook()
     session = await get_db_session()
     await Places.create(session, 'Комендантский 65')
     await Places.create(session, 'Бородинская 2\86')

@@ -6,3 +6,4 @@ key.sh
 cookies.pkl
 .vscode
 aiogram_debug.log
+.env

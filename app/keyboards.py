@@ -12,7 +12,7 @@ key5 = types.InlineKeyboardButton(text='Пригласить друга', callba
 key6 = types.InlineKeyboardButton(text='Как копить бонусы?', callback_data='how_to_collect')
 key7 = types.InlineKeyboardButton(text='Адреса и режим работы', callback_data='address')
 key8 = types.InlineKeyboardButton(text='Задать вопрос', callback_data='ask')
-key9 = types.InlineKeyboardButton(text='Следить за нами в ТГ', url='https://t.me/kosplace')
+key9 = types.InlineKeyboardButton(text='Следить за нами в ТГ', url='https://t.me/kosplace/260')
 key10 = types.InlineKeyboardButton(text='KOS в социальных сетях', callback_data='social')
 key11 = types.InlineKeyboardButton(text='Оставить отзыв', callback_data='review')
 
@@ -20,10 +20,10 @@ key_menu = types.InlineKeyboardButton(text='Назад в меню', callback_da
 
 
 key_borodinskaya = types.InlineKeyboardButton(text='Бородинская', url='https://kosplace.ru/menyborodinskaya')
-key_komendantskaya = types.InlineKeyboardButton(text='Комендантская', url='https://kosplace.ru/menykomenda')
+key_komendantskaya = types.InlineKeyboardButton(text='Комендантский', url='https://kosplace.ru/menykomenda')
 
 review_borodinskaya = types.InlineKeyboardButton(text='Бородинская', url='https://kosplace.ru/review')
-review_komendantskaya = types.InlineKeyboardButton(text='Комендантская', url='https://kosplace.ru/review_kom')
+review_komendantskaya = types.InlineKeyboardButton(text='Комендантский', url='https://kosplace.ru/review_kom')
 
 
 instagram_button = types.InlineKeyboardButton(text="Instagram", url="https://www.instagram.com/kos.place?igsh=aDBpc2x5cTB4dm4z")

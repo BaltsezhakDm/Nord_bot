@@ -16,6 +16,7 @@ from fsm import Form, AskForm
 from utils import encode_user_id, encode_json, check_referal
 from logger import setup_logger
 from auth import login_required_callback, login_required
+from tasks import send_to_queue
 from keyboards import keyboard_main, keyboard_back, keyboard_menu, keyboard_social, keyboard_review, clean_keyboard
 
 
@@ -26,6 +27,14 @@ with open('app/messages.yaml', 'r', encoding='utf-8') as f:
     messages = yaml.safe_load(f)
 
 photo_nord = FSInputFile('files/nord.webp')
+menu_img = FSInputFile('files/menu.webp')
+about_img = FSInputFile('files/about.webp')
+referal_img = FSInputFile('files/referal.webp')
+address_img = FSInputFile('files/address.webp')
+social_img = FSInputFile('files/about.webp')
+review_img = FSInputFile('files/review.webp')
+question_img = FSInputFile('files/question.webp')
+balance_img = FSInputFile('files/balance.webp')
 
 api = CRM(login=os.getenv('login_api'), password=os.getenv('password_api'))
 lk = Office(login=os.getenv('login_lk'), password=os.getenv('password_lk'))
@@ -39,6 +48,7 @@ async def start_message(message: types.Message, session: AsyncSession, state: FS
     await state.update_data(**referal_data)
     
     client = await Customers.find(message.chat.id, db=session)
+        
     if client:
         await state.clear()
         await message.answer(text=f'С возвращением, {message.chat.first_name}!', reply_markup=keyboard_main)
@@ -55,19 +65,22 @@ async def start_message(message: types.Message, session: AsyncSession, state: FS
 @router.message(F.contact)
 async def contact(message: types.Message, session: AsyncSession, state: FSMContext):
     if message.contact:
-        logger.debug(f'Contact: {message.contact.phone_number}')
         await state.set_state(Form.number)
 
         data = await state.get_data()
-        logger.debug(f'Data: {data}')
 
         phone_number = int(message.contact.phone_number[-10:])
         client = api.find_client(phone_number)
         if client:
             await Customers.create(
-                session, message.chat.id, int(client['id']),
+                session, 
+                message.chat.id, 
+                int(client['id']),
                 f"{client.get('firstName')} {client.get('lastName')}",
-                phone_number=phone_number, place_id=data.get('place_id'), referal_id=data.get('user_id'))
+                phone_number=phone_number, 
+                place_id=data.get('place_id'), 
+                referal_id=data.get('user_id'),
+                )
             if client['tokens'] == [] or str(phone_number) not in [token['key'] for token in client['tokens']]:
                 lk.create_token(client.get('id'), phone_number)
 
@@ -79,14 +92,25 @@ async def contact(message: types.Message, session: AsyncSession, state: FSMConte
             client_db = await Customers.find(message.chat.id, session)
             if not client_db:
                 new_client = api.create(
-                    full_name, phone_number, message.chat.id)
+                    full_name, 
+                    phone_number,
+                    message.chat.id,
+                    )
 
                 await Customers.create(
-                    session, message.chat.id, new_client.get('id'), full_name,
-                    phone_number=phone_number, place_id=data.get('place_id'), referal_id=data.get('user_id'))
+                    session, message.chat.id, 
+                    new_client.get('id'), 
+                    full_name,
+                    phone_number=phone_number, 
+                    place_id=data.get('place_id'), 
+                    referal_id=data.get('user_id'),
+                    )
 
                 lk.create_token(new_client.get('id'), phone_number)
                 lk.add_credit(new_client.get('id'), 100)
+
+                if data.get('user_id'):
+                    send_to_queue(data.get('user_id'))
 
             await state.clear()
             await message.answer('Успешная регистрация!', reply_markup=clean_keyboard)
@@ -105,7 +129,12 @@ async def show_menu(call: types.CallbackQuery, session: AsyncSession, client: Cu
 @router.callback_query(F.data == "about")
 async def show_about(call: types.CallbackQuery, *args, **kwargs):
     await call.message.delete()
-    await call.message.answer(text=messages.get('about'), reply_markup=keyboard_back, parse_mode='HTML')
+    await call.message.answer_photo(
+        photo=about_img,
+        caption=messages.get('about'), 
+        reply_markup=keyboard_back, 
+        parse_mode='HTML',
+        )
 
 
 
@@ -114,9 +143,10 @@ async def show_about(call: types.CallbackQuery, *args, **kwargs):
 async def show_menu(call: types.CallbackQuery, *args, **kwargs):
     await call.message.delete()
     await call.message.answer_photo(
-        photo=photo_nord, caption='Выберите кофейню:', reply_markup=keyboard_menu,
+        photo=menu_img, 
+        caption='Выберите кофейню:', 
+        reply_markup=keyboard_menu,
     )
-    # await call.message.edit_text('Выберите кофейню:', reply_markup=keyboard_menu)
 
 
 @router.callback_query(F.data == 'qr')
@@ -125,7 +155,10 @@ async def show_qr(call: types.CallbackQuery, session: AsyncSession, client: Cust
     qr = api.qr_code(client.phone_number)
 
     await call.message.delete()
-    await call.message.answer_photo(photo=qr, reply_markup=keyboard_back)
+    await call.message.answer_photo(
+        photo=qr, 
+        reply_markup=keyboard_back,
+        )
 
 
 @router.callback_query(F.data == 'balance')
@@ -134,7 +167,11 @@ async def show_balance(call: types.CallbackQuery, session: AsyncSession, client:
     balance = api.get_balance(client.phone_number)
 
     await call.message.delete()
-    await call.message.answer_photo(photo=photo_nord, caption=f'Ваш баланс: {balance} баллов', reply_markup=keyboard_back)
+    await call.message.answer_photo(
+        photo=balance_img, 
+        caption=f'Ваш баланс: {balance} баллов', 
+        reply_markup=keyboard_back,
+        )
 
 
 @router.callback_query(F.data == 'invite')
@@ -144,9 +181,10 @@ async def ref_account(call: types.CallbackQuery, session: AsyncSession, client: 
     link = await create_start_link(call.bot, user_id)
     await call.message.delete()
     await call.message.answer_photo(
-        photo=photo_nord,
-        caption=f'Ссылка для приглашения!\n<b><code>{link}</code></b>\n(нажмите на ссылку, чтобы скопировать)', 
-        reply_markup=keyboard_back, parse_mode='HTML')
+        photo=referal_img,
+        caption=f'Пригласи друга и после его первой покупки получи 100 бонусов (начисление происходит в течение 12 часов)!\n<b><code>{link}</code></b>\n(нажмите на ссылку, чтобы скопировать)', 
+        reply_markup=keyboard_back, parse_mode='HTML',
+        )
 
 
 @router.callback_query(F.data == 'how_to_collect')
@@ -156,14 +194,20 @@ async def how_to_collect(call: types.CallbackQuery, *args, **kwargs):
     await call.message.answer(
         messages.get('start_text_1').format(username=call.message.chat.first_name) \
             + '\n' + messages.get('start_text_2'), 
-        reply_markup=keyboard_back, parse_mode='HTML')
+        reply_markup=keyboard_back, 
+        parse_mode='HTML',
+        )
 
 
 @router.callback_query(F.data == 'address')
 async def address(call: types.CallbackQuery, *args, **kwargs):
     await call.message.delete()
-    await call.message.answer_photo(photo=photo_nord, 
-                                    caption=messages.get('address'), reply_markup=keyboard_back, parse_mode='HTML')
+    await call.message.answer_photo(
+        photo=address_img, 
+        caption=messages.get('address'), 
+        reply_markup=keyboard_back, 
+        parse_mode='HTML',
+        )
 
 
 @router.callback_query(F.data == 'ask')
@@ -172,7 +216,11 @@ async def ask(call: types.CallbackQuery, *args,  state: FSMContext, **kwargs):
     await state.set_state(AskForm.ask)
     await call.message.delete()
 
-    await call.message.answer_photo(photo=photo_nord, caption='Напишите ваш вопрос:', reply_markup=keyboard_back)
+    await call.message.answer_photo(
+        photo=question_img, 
+        caption='Напишите ваш вопрос:', 
+        reply_markup=keyboard_back,
+        )
 
 
 @router.message(AskForm.ask)
@@ -192,14 +240,24 @@ async def ask_run(message: types.Message, session: AsyncSession, client: Custome
 async def social(call: types.CallbackQuery, *args, **kwargs):
     text = "<b>Социальные сети:</b>"
     await call.message.delete()
-    await call.message.answer_photo(photo=photo_nord, caption=text, reply_markup=keyboard_social, parse_mode='HTML')
+    await call.message.answer_photo(
+        photo=social_img, 
+        caption=text, 
+        reply_markup=keyboard_social, 
+        parse_mode='HTML',
+        )
 
 @router.callback_query(F.data == 'review')
 @login_required_callback
 async def review(call: types.CallbackQuery, *args, **kwargs):
     text = "<b>Оставить отзыв:</b>"
     await call.message.delete()
-    await call.message.answer_photo(photo=photo_nord, caption=text, reply_markup=keyboard_review, parse_mode='HTML')
+    await call.message.answer_photo(
+        photo=review_img, 
+        caption=text, 
+        reply_markup=keyboard_review, 
+        parse_mode='HTML',
+        )
 
 
 @router.message(Command('placeQR'))
