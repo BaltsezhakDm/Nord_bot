@@ -57,9 +57,13 @@ async def start_message(message: types.Message, session: AsyncSession, state: FS
 
     if client:
         await state.clear()
+        message = await message.answer(
+            f'С возвращением, {message.chat.first_name}!',
+            reply_markup=clean_keyboard,
+            )
         await message.bot.send_photo(
             message.chat.id,
-            caption=f'С возвращением, {message.chat.first_name}!',
+            caption=f'Выберите раздел',
             photo=photo_nord,
             reply_markup=keyboard_main,
             parse_mode='HTML',
@@ -171,7 +175,7 @@ async def show_menu(call: types.CallbackQuery, session: AsyncSession, client: Cu
     await call.message.edit_media(
         types.InputMediaPhoto(
             media=photo_nord,
-            caption='Выбрете новый раздел',
+            caption='Выберете новый раздел',
             parse_mode='HTML',
         ),
         reply_markup=keyboard_main,
@@ -213,7 +217,7 @@ async def show_qr(call: types.CallbackQuery, session: AsyncSession, client: Cust
     await call.message.edit_media(
         types.InputMediaPhoto(
             media=qr,
-            caption='Qr код:',
+            caption='Qr код',
             parse_mode='HTML',
         ),
         reply_markup=keyboard_back,
