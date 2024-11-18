@@ -6,3 +6,8 @@ class Form(StatesGroup):
 
 class AskForm(StatesGroup):
     ask = State()
+
+class MessageForm(StatesGroup):
+    message = State()
+    confirm = State()
+    cancel = State()

@@ -1,5 +1,5 @@
 import logging
-from aiogram.types import Update
+from aiogram.types import Update, InputMediaPhoto, FSInputFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from typing import Callable, Dict, Any, Awaitable
@@ -11,6 +11,10 @@ from db import get_db_session
 from model import LogEntry
 
 logging.basicConfig(level=logging.INFO)
+
+
+photo_nord = FSInputFile('files/nord.webp')
+photo = InputMediaPhoto(media=photo_nord)
 
 
 class ErrorHandlingMiddleware(BaseMiddleware):
@@ -39,9 +43,19 @@ class ErrorHandlingMiddleware(BaseMiddleware):
             # Отправляем сообщение пользователю о возникшей ошибке
             try:
                 if event.message:
-                    await event.message.answer(f"Произошла ошибка. Поробуйте еще раз", reply_markup=keyboard_main)
+                    await event.message.bot.send_photo(
+                        event.message.chat.id,
+                        photo=photo_nord,
+                        caption=f"Произошла ошибка. Поробуйте еще раз", 
+                        reply_markup=keyboard_main,
+                        )
                 elif event.callback_query:
-                    await event.callback_query.message.answer(f"Произошла ошибка. Поробуйте еще раз", reply_markup=keyboard_main)
+                    await event.callback_query.message.bot.send_photo(
+                        event.callback_query.message.chat.id,
+                        photo=photo_nord,
+                        caption=f"Произошла ошибка. Поробуйте еще раз", 
+                        reply_markup=keyboard_main,
+                        )
             except Exception as send_error:
                 logging.error(f"Failed to send error message to user {user_id}: {send_error}")
             # Повторно поднимем исключение, чтобы оно было обработано дальше, если нужно

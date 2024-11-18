@@ -2,11 +2,24 @@ import pika
 import json
 import time
 from datetime import datetime, timedelta
+import asyncio
+import os
+import requests
+from threading import Thread
+
+
+token = os.getenv('token')
+rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
+rabbitmq_port = os.getenv('RABBITMQ_PORT', 5672)
+rabbitmq_user = os.getenv('RABBITMQ_USER', 'user')
+rabbitmq_password = os.getenv('RABBITMQ_PASSWORD', 'password')
 
 DELAY_QUEUE = "delayed_tasks"
 MAIN_QUEUE = "nord_referal"
-DELAY_SECONDS = 10  # 3 часа в секундах
-from threading import Thread
+DELAY_SECONDS = 60 * 60 * 3  # 3 часа в секундах
+
+
+credentials = pika.PlainCredentials(rabbitmq_user, rabbitmq_password)
 
 
 
@@ -15,17 +28,24 @@ def process_user_id(user_id):
     Обрабатывает user_id.
     Возвращает False, если задача не выполнена, True - если выполнена.
     """
-    time.sleep(1)  # Симуляция обработки
-    return True if int(user_id) % 7 == 0 else False
-
+    try:
+        response = requests.post(
+            url=f'https://api.telegram.org/bot{token}/sendMessage',
+            data={'chat_id': 999616091, 'text': f'Пополнить {user_id} бонусы'}
+        )
+        if response.status_code != 200:
+            return False
+        return True
+    except Exception as e:
+        print(f"Error processing user_id {user_id}: {e}")
+        return False
 
 def handle_delayed_tasks():
     """
     Проверяет отложенные задачи и возвращает их в основную очередь,
     если истекло время задержки.
     """
-    credentials = pika.PlainCredentials('user', 'password')
-    connection = pika.BlockingConnection(pika.ConnectionParameters("localhost", credentials=credentials))
+    connection = pika.BlockingConnection(pika.ConnectionParameters(rabbitmq_host, credentials=credentials))
     channel = connection.channel()
 
     channel.queue_declare(queue=DELAY_QUEUE, durable=True)
@@ -97,8 +117,7 @@ def start_consumer():
     """
     Основной консумер для обработки задач из основной очереди.
     """
-    credentials = pika.PlainCredentials('user', 'password')
-    connection = pika.BlockingConnection(pika.ConnectionParameters("localhost", credentials=credentials))
+    connection = pika.BlockingConnection(pika.ConnectionParameters(rabbitmq_host, credentials=credentials))
     channel = connection.channel()
 
     channel.queue_declare(queue=MAIN_QUEUE, durable=True)

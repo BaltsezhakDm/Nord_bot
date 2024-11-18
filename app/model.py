@@ -30,17 +30,23 @@ class Customers(Base):
     async def create(db: AsyncSession, telegram_id: int, 
                      qresto_id: int, name = None, news=False, 
                      phone_number=None, place_id=None, referal_id=None ):
-        async with db.begin():
-            customer = Customers(
-                telegram_id=telegram_id,
-                qresto_id=qresto_id,
-                name=name,
-                phone_number=phone_number,
-                news=news,
-                place_id=place_id,
-                referal_id=referal_id
-                )
-            db.add(customer)
+        customer = Customers(
+            telegram_id=telegram_id,
+            qresto_id=qresto_id,
+            name=name,
+            phone_number=phone_number,
+            news=news,
+            place_id=place_id,
+            referal_id=referal_id
+            )
+        
+        log = LogEntry(
+            user_id=telegram_id,
+            command='register new customer in tg bot',
+            status='Success',
+            error_message=None
+        )
+        db.add_all((customer, log))
         await db.commit()
         await db.refresh(customer)
         return customer

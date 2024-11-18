@@ -7,6 +7,7 @@ key2 = types.InlineKeyboardButton(text='Меню', callback_data='menu')
 
 key3 = types.InlineKeyboardButton(text='Показать QR', callback_data='qr')
 key4 = types.InlineKeyboardButton(text='Проверить баланс', callback_data='balance')
+key4_1 = types.InlineKeyboardButton(text='История транзакций', callback_data='history')
 key5 = types.InlineKeyboardButton(text='Пригласить друга', callback_data='invite')
 
 key6 = types.InlineKeyboardButton(text='Как копить бонусы?', callback_data='how_to_collect')
@@ -18,6 +19,9 @@ key11 = types.InlineKeyboardButton(text='Оставить отзыв', callback_
 
 key_menu = types.InlineKeyboardButton(text='Назад в меню', callback_data='back')
 
+key_yes = types.InlineKeyboardButton(text='Да', callback_data='yes')
+key_no = types.InlineKeyboardButton(text='Нет', callback_data='no')
+key_cancel = types.InlineKeyboardButton(text='Отменить', callback_data='cancel')
 
 key_borodinskaya = types.InlineKeyboardButton(text='Бородинская', url='https://kosplace.ru/menyborodinskaya')
 key_komendantskaya = types.InlineKeyboardButton(text='Комендантский', url='https://kosplace.ru/menykomenda')
@@ -34,9 +38,10 @@ telegram_button = types.InlineKeyboardButton(text="Telegram", url="https://t.me/
 keyboard_review = types.InlineKeyboardMarkup(inline_keyboard=[[review_borodinskaya, review_komendantskaya], [key_menu]])
 keyboard_social = types.InlineKeyboardMarkup(inline_keyboard=[[instagram_button], [vk_button], [telegram_button], [key_menu]])
 keyboard_main = types.InlineKeyboardMarkup(
-    inline_keyboard=[[key1, key2], [key3], [key4], [key5], [key6], [key7], [key8], [key9], [key10], [key11]])
+    inline_keyboard=[[key1, key2], [key3], [key4],[key4_1], [key5], [key6], [key7], [key8], [key9], [key10], [key11]])
 keyboard_menu = types.InlineKeyboardMarkup(inline_keyboard=[[key_borodinskaya, key_komendantskaya], [key_menu]])
 keyboard_back = types.InlineKeyboardMarkup(inline_keyboard=[[key_menu]])
+keyboard_confirm = types.InlineKeyboardMarkup(inline_keyboard=[[key_yes, key_no], [key_cancel]])
 
 clean_keyboard = types.ReplyKeyboardRemove()
 

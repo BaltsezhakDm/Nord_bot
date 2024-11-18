@@ -30,3 +30,5 @@ def send_to_queue(user_id):
     connection.close()
 
 
+if __name__ == '__main__':
+    send_to_queue(1)
