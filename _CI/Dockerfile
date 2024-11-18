@@ -6,6 +6,8 @@ COPY requirements.txt .
 
 RUN pip install -r requirements.txt
 
+COPY /app .
+
 COPY . .
 
 ENTRYPOINT [ "bash", "_CI/entrypoint.sh"]
