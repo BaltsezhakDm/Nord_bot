@@ -21,7 +21,7 @@ from tasks import send_to_queue
 from keyboards import (
     keyboard_main, keyboard_back, keyboard_menu,
     keyboard_social, keyboard_review, clean_keyboard,
-    key_menu, keyboard_confirm,
+    key_menu, keyboard_confirm, key_borodinskaya, key_komendantskaya
 )
 from db import r
 
@@ -40,6 +40,8 @@ social_img = FSInputFile('files/about.webp')
 review_img = FSInputFile('files/review.webp')
 question_img = FSInputFile('files/question.webp')
 balance_img = FSInputFile('files/balance.webp')
+menu_b = FSInputFile('files/menu_b.webp')
+menu_k = FSInputFile('files/menu_k.webp')
 
 api = CRM(login=os.getenv('login_api'), password=os.getenv('password_api'))
 lk = Office(login=os.getenv('login_lk'), password=os.getenv('password_lk'))
@@ -208,6 +210,31 @@ async def show_menu(call: types.CallbackQuery, *args, **kwargs):
         reply_markup=keyboard_menu,
     )
 
+@router.callback_query(F.data.contains("menu_"))
+@login_required_callback
+async def show_menu_place(call: types.CallbackQuery, *args, **kwargs):
+    
+    if call.data == 'menu_borodinskaya':
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_komendantskaya, key_menu]])
+
+        await call.message.edit_media(
+            types.InputMediaPhoto(
+                media=menu_b,
+                caption='Меню кофейни Бородинская',
+                parse_mode='HTML',
+            ),
+            reply_markup=keyboard
+        )
+    if call.data == 'menu_komendantskaya':
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_borodinskaya, key_menu]])
+        await call.message.edit_media(
+            types.InputMediaPhoto(
+                media=menu_k,
+                caption='Меню кофейни Комендантский',
+                parse_mode='HTML',
+            ),
+            reply_markup=keyboard
+        )
 
 @router.callback_query(F.data == 'qr')
 @login_required_callback

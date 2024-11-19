@@ -23,8 +23,8 @@ key_yes = types.InlineKeyboardButton(text='Да', callback_data='yes')
 key_no = types.InlineKeyboardButton(text='Нет', callback_data='no')
 key_cancel = types.InlineKeyboardButton(text='Отменить', callback_data='cancel')
 
-key_borodinskaya = types.InlineKeyboardButton(text='Бородинская', url='https://kosplace.ru/menyborodinskaya')
-key_komendantskaya = types.InlineKeyboardButton(text='Комендантский', url='https://kosplace.ru/menykomenda')
+key_borodinskaya = types.InlineKeyboardButton(text='Бородинская', callback_data='menu_borodinskaya')
+key_komendantskaya = types.InlineKeyboardButton(text='Комендантский', callback_data='menu_komendantskaya')
 
 review_borodinskaya = types.InlineKeyboardButton(text='Бородинская', url='https://kosplace.ru/review')
 review_komendantskaya = types.InlineKeyboardButton(text='Комендантский', url='https://kosplace.ru/review_kom')
