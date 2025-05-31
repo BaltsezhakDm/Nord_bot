@@ -21,7 +21,7 @@ def admin_required(func):
     @wraps(func)
     async def wrapper(message: types.Message, session: AsyncSession, *args, **kwargs):
         client = await Customers.find(message.chat.id, session)
-        if client and client.phone_number in (9969290700,):
+        if client and client.phone_number in (9969290700, 9216539725):
             return await func(message, session, client, *args, **kwargs)
         else:
             await message.answer(text='Нет прав доступа')

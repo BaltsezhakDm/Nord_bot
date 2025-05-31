@@ -38,6 +38,7 @@ dp.include_router(router)
 async def on_startup():
     session = await get_db_session()
     await Places.create(session, 'Комендантский 65')
+    await Places.create(session, 'Аптекарский 5')
     await Places.create(session, 'Бородинская 2\86')
     await bot.set_webhook(webhook_url)
 
@@ -63,6 +64,7 @@ async def debug() -> None:
     await bot.delete_webhook()
     session = await get_db_session()
     await Places.create(session, 'Комендантский 65')
+    await Places.create(session, 'Аптекарский 5')
     await Places.create(session, 'Бородинская 2\86')
     await dp.start_polling(bot)
 

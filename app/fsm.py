@@ -11,3 +11,7 @@ class MessageForm(StatesGroup):
     message = State()
     confirm = State()
     cancel = State()
+
+class UpdateMenuStates(StatesGroup):
+    choosing = State() 
+    waiting_photo = State()

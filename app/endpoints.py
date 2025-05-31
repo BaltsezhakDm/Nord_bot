@@ -5,15 +5,18 @@ import json
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.deep_linking import create_start_link
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.types import FSInputFile
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from PIL import Image
+import fitz
+
 from api import CRM, Office
 from model import Customers, Places, LogEntry
-from fsm import Form, AskForm, MessageForm
+from fsm import Form, AskForm, MessageForm, UpdateMenuStates
 from utils import encode_user_id, encode_json, check_referal
 from logger import setup_logger
 from auth import login_required_callback, login_required, admin_required
@@ -21,7 +24,7 @@ from tasks import send_to_queue
 from keyboards import (
     keyboard_main, keyboard_back, keyboard_menu,
     keyboard_social, keyboard_review, clean_keyboard,
-    key_menu, keyboard_confirm, key_borodinskaya, key_komendantskaya
+    key_menu, keyboard_confirm, key_borodinskaya, key_komendantskaya, kb
 )
 from db import r
 
@@ -42,6 +45,7 @@ question_img = FSInputFile('files/question.webp')
 balance_img = FSInputFile('files/balance.webp')
 menu_b = FSInputFile('files/menu_b.webp')
 menu_k = FSInputFile('files/menu_k.webp')
+menu_a = FSInputFile('files/menu_a.webp')
 
 api = CRM(login=os.getenv('login_api'), password=os.getenv('password_api'))
 lk = Office(login=os.getenv('login_lk'), password=os.getenv('password_lk'))
@@ -231,6 +235,16 @@ async def show_menu_place(call: types.CallbackQuery, *args, **kwargs):
             types.InputMediaPhoto(
                 media=menu_k,
                 caption='Меню кофейни Комендантский',
+                parse_mode='HTML',
+            ),
+            reply_markup=keyboard
+        )
+    if call.data == 'menu_aptekarskaya':
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_borodinskaya, key_menu]])
+        await call.message.edit_media(
+            types.InputMediaPhoto(
+                media=menu_a,
+                caption='Меню кофеини Аптекарский',
                 parse_mode='HTML',
             ),
             reply_markup=keyboard
@@ -490,3 +504,154 @@ async def confirm_run(call: types.CallbackQuery, session: AsyncSession, state: F
         )
         await state.clear()  # Завершаем FSM
     await call.answer()
+
+
+@router.message(Command("update_menu"))
+@admin_required
+async def cmd_update_menu(message: types.Message, state: FSMContext):
+    """
+    Шаг 1. Пользователь вводит /update_menu — показываем кнопки выбора меню.
+    """
+    await state.clear()
+    
+    await message.answer(
+        "Выберите, какое меню хотите обновить:",
+        reply_markup=kb,
+    )
+    await state.set_state(UpdateMenuStates.choosing)
+
+
+@router.message(StateFilter(UpdateMenuStates.choosing), F.text.in_(["Аптекарский", "Коменданский", "Бородинская"]))
+async def process_menu_choice(message: types.Message, state: FSMContext):
+    """
+    Шаг 2. Пользователь нажал на одну из кнопок — запомним выбор и попросим прислать файл.
+    """
+    choice = message.text  # будет ровно один из трёх
+    # Сохраним в FSMContext выбор пользователя, чтобы потом понять, куда сохранять
+    await state.update_data(menu_choice=choice)
+
+    # Сними клавиатуру, больше не нужна
+    await message.answer(
+        f"Вы выбрали «{choice}». Пришлите, пожалуйста, файл с новым меню (jpg или png).",
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
+    await state.set_state(UpdateMenuStates.waiting_photo)
+
+
+@router.message(StateFilter(UpdateMenuStates.choosing))
+async def invalid_choice(message: types.Message):
+    """
+    Если пользователь ввёл текст не из списка, попросим выбрать снова.
+    """
+    await message.answer("Нужно выбрать одну из кнопок: Аптекарский, Коменданский или Бородинская.")
+
+@router.message(StateFilter(UpdateMenuStates.waiting_file), F.content_type.in_({"photo", "document"}))
+async def process_new_file(message: types.Message, state: FSMContext):
+    """
+    Шаг 3. Пользователь прислал файл. Если это картинка (jpg/png) — конвертим и сохраняем.
+    Если это PDF — рендерим первую страницу и сохраняем как webp.
+    """
+    data = await state.get_data()
+    choice: str = data.get("menu_choice")  # выбор пользователя
+
+    # Словарь, куда сохраняем в зависимости от выбора:
+    mapping = {
+        "Аптекарский": "files/menu_a.webp",
+        "Коменданский": "files/menu_k.webp",
+        "Бородинская": "files/menu_b.webp",
+    }
+    target_path = mapping.get(choice)
+    if not target_path:
+        await message.answer("Не удалось определить, куда сохранять файл. Попробуйте ещё раз.")
+        await state.clear()
+        return
+
+    # 5.1) Решаем, что именно прислали:
+    is_pdf = False
+    if message.photo:
+        # Это обычная картинка
+        file_id = message.photo[-1].file_id
+        orig_filename = f"{file_id}.jpg"
+    else:
+        # Это document. Проверяем MIME и расширение
+        doc = message.document
+        mime = doc.mime_type or ""
+        name = doc.file_name or ""
+        # Если PDF (mime application/pdf или имя заканчивается на .pdf)
+        if mime == "application/pdf" or name.lower().endswith(".pdf"):
+            is_pdf = True
+            file_id = doc.file_id
+            orig_filename = name if name.lower().endswith(".pdf") else f"{file_id}.pdf"
+        else:
+            # Если не PDF и не картинка изначально (PNG/JPEG)
+            if not mime.startswith("image/"):
+                await message.answer("Нужно прислать изображение (jpg/png) или PDF-файл.")
+                return
+            file_id = doc.file_id
+            orig_filename = name
+
+    # 5.2) Скачиваем файл во временную папку tmp/
+    os.makedirs("tmp", exist_ok=True)
+    tmp_path = os.path.join("tmp", orig_filename)
+
+    file = await message.bot.get_file(file_id)
+    await message.bot.download_file(file.file_path, destination=tmp_path)
+
+    # 5.3) Конвертация
+    try:
+        # Если это PDF, рендерим первую страницу через PyMuPDF
+        if is_pdf:
+            # Открываем PDF
+            pdf_doc = fitz.open(tmp_path)
+            if pdf_doc.page_count < 1:
+                raise RuntimeError("PDF пустой или не удалось прочитать страницы")
+            page = pdf_doc.load_page(0)  # первая страница (индекс 0)
+            # Рендерим страницу в pixmap (по умолчанию 72 DPI)
+            mat = fitz.Matrix(2, 2)  # можно увеличить DPI, например, 144; здесь увеличиваем в 2 раза
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            # Сохраняем временный PNG: fitz может отдавать .png-байты
+            tmp_img_path = tmp_path.rsplit(".", 1)[0] + ".png"
+            pix.save(tmp_img_path)
+
+            # Теперь открываем через PIL и конвертируем в WebP
+            img = Image.open(tmp_img_path).convert("RGB")
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            img.save(target_path, format="WEBP", quality=85)
+
+            # Удаляем промежуточный PNG
+            os.remove(tmp_img_path)
+            pdf_doc.close()
+
+        else:
+            # Обычное изображение (jpg/png)
+            img = Image.open(tmp_path).convert("RGB")
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            img.save(target_path, format="WEBP", quality=85)
+
+    except Exception as e:
+        await message.answer(f"Не удалось сконвертировать файл: {e}")
+        # Чистим временный файл
+        try:
+            os.remove(tmp_path)
+        except:
+            pass
+        await state.clear()
+        return
+
+    # 5.4) Удаляем временный файл PDF или исходное изображение
+    try:
+        os.remove(tmp_path)
+    except:
+        pass
+
+    # 5.5) Подтверждаем и показываем получившийся WebP (опционально)
+    await message.answer(f"Меню «{choice}» обновлено успешно! Вот как оно теперь выглядит:")
+    await message.answer_photo(FSInputFile(target_path))
+
+    # Сбрасываем состояние
+    await state.clear()
+
+
+@router.message(StateFilter(UpdateMenuStates.waiting_photo))
+async def invalid_file(message: types.Message):
+    await message.answer("Пожалуйста, пришлите файл формата jpg или png.")

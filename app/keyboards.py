@@ -25,6 +25,7 @@ key_cancel = types.InlineKeyboardButton(text='Отменить', callback_data='
 
 key_borodinskaya = types.InlineKeyboardButton(text='Бородинская', callback_data='menu_borodinskaya')
 key_komendantskaya = types.InlineKeyboardButton(text='Комендантский', callback_data='menu_komendantskaya')
+key_aptekarskaya = types.InlineKeyboardButton(text='Аптекарский', callback_data='menu_aptekarskaya')
 
 review_borodinskaya = types.InlineKeyboardButton(text='Бородинская', url='https://kosplace.ru/review')
 review_komendantskaya = types.InlineKeyboardButton(text='Комендантский', url='https://kosplace.ru/review_kom')
@@ -39,9 +40,19 @@ keyboard_review = types.InlineKeyboardMarkup(inline_keyboard=[[review_borodinska
 keyboard_social = types.InlineKeyboardMarkup(inline_keyboard=[[instagram_button], [vk_button], [telegram_button], [key_menu]])
 keyboard_main = types.InlineKeyboardMarkup(
     inline_keyboard=[[key1, key2], [key3], [key4],[key4_1], [key5], [key6], [key7], [key8], [key9], [key10], [key11]])
-keyboard_menu = types.InlineKeyboardMarkup(inline_keyboard=[[key_borodinskaya, key_komendantskaya], [key_menu]])
+keyboard_menu = types.InlineKeyboardMarkup(inline_keyboard=[[key_borodinskaya, key_komendantskaya, key_aptekarskaya], [key_menu]])
 keyboard_back = types.InlineKeyboardMarkup(inline_keyboard=[[key_menu]])
 keyboard_confirm = types.InlineKeyboardMarkup(inline_keyboard=[[key_yes, key_no], [key_cancel]])
+
+kb = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="Аптекарский")],
+            [types.KeyboardButton(text="Коменданский")],
+            [types.KeyboardButton(text="Бородинская")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 clean_keyboard = types.ReplyKeyboardRemove()
 
