@@ -14,4 +14,4 @@ class MessageForm(StatesGroup):
 
 class UpdateMenuStates(StatesGroup):
     choosing = State() 
-    waiting_photo = State()
+    waiting_file = State()

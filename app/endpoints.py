@@ -535,7 +535,7 @@ async def process_menu_choice(message: types.Message, state: FSMContext):
         f"Вы выбрали «{choice}». Пришлите, пожалуйста, файл с новым меню (jpg или png).",
         reply_markup=types.ReplyKeyboardRemove(),
     )
-    await state.set_state(UpdateMenuStates.waiting_photo)
+    await state.set_state(UpdateMenuStates.waiting_file)
 
 
 @router.message(StateFilter(UpdateMenuStates.choosing))
@@ -652,6 +652,6 @@ async def process_new_file(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-@router.message(StateFilter(UpdateMenuStates.waiting_photo))
+@router.message(StateFilter(UpdateMenuStates.waiting_file))
 async def invalid_file(message: types.Message):
     await message.answer("Пожалуйста, пришлите файл формата jpg или png.")
