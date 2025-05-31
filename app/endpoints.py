@@ -508,7 +508,7 @@ async def confirm_run(call: types.CallbackQuery, session: AsyncSession, state: F
 
 @router.message(Command("update_menu"))
 @admin_required
-async def cmd_update_menu(message: types.Message, state: FSMContext):
+async def cmd_update_menu(message: types.Message, session: AsyncSession, client: Customers, state: FSMContext, *args, **kwargs):
     """
     Шаг 1. Пользователь вводит /update_menu — показываем кнопки выбора меню.
     """
