@@ -2,11 +2,12 @@ import os
 import yaml
 import json
 
+import asyncio
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.deep_linking import create_start_link
 from aiogram.filters import CommandStart, Command, StateFilter
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, InputMediaPhoto
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -26,7 +27,26 @@ from keyboards import (
     keyboard_social, keyboard_review, clean_keyboard,
     key_menu, keyboard_confirm, key_borodinskaya, key_komendantskaya, kb
 )
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pathlib import Path
 from db import r
+
+MENUS_DIR = Path("files/menus")
+
+MENU_UPLOAD_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+PLACE_SLUG_BY_CB = {
+    "menu_borodinskaya": "borodinskaya",
+    "menu_komendantskaya": "komendantskaya",
+    "menu_aptekarskaya": "aptekarskaya",
+}
+
+PLACE_TITLE = {
+    "borodinskaya": "Бородинская",
+    "komendantskaya": "Комендантский",
+    "aptekarskaya": "Аптекарский",
+}
 
 logger = setup_logger()
 router = Router(name=__name__)
@@ -50,6 +70,97 @@ menu_a = FSInputFile('files/menu_a.webp')
 api = CRM(login=os.getenv('login_api'), password=os.getenv('password_api'))
 lk = Office(login=os.getenv('login_lk'), password=os.getenv('password_lk'))
 
+
+def ensure_place_dir(place_slug: str) -> Path:
+    d = MENUS_DIR / place_slug
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def list_pages(place_slug: str) -> list[Path]:
+    d = ensure_place_dir(place_slug)
+    pages = sorted(d.glob("*.webp"))
+    # на случай старой схемы — если папка пустая, можно попробовать подтянуть старый файл:
+    # (опционально) миграция: files/menu_b.webp -> files/menus/borodinskaya/001.webp
+    return pages
+
+def page_path(place_slug: str, page: int) -> Path:
+    # 1 -> 001.webp
+    return ensure_place_dir(place_slug) / f"{page:03d}.webp"
+
+
+def build_menu_nav_kb(place_slug: str, page: int, total: int) -> InlineKeyboardMarkup:
+    prev_page = total if page <= 1 else (page - 1)
+    next_page = 1 if page >= total else (page + 1)
+
+    # callback_data формата: menu_view:{place}:{page}
+    left = InlineKeyboardButton(text="◀️", callback_data=f"menu_view:{place_slug}:{prev_page}")
+    mid  = InlineKeyboardButton(text=f"{page}/{total}", callback_data="_")
+    right= InlineKeyboardButton(text="▶️", callback_data=f"menu_view:{place_slug}:{next_page}")
+
+    # кнопки переключения кофейни (как было у тебя через key_* можно оставить, но проще так)
+    switch_row = [
+        InlineKeyboardButton(text="Бородинская", callback_data="menu_place:borodinskaya"),
+        InlineKeyboardButton(text="Комендантский", callback_data="menu_place:komendantskaya"),
+        InlineKeyboardButton(text="Аптекарский", callback_data="menu_place:aptekarskaya"),
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [left, mid, right],
+        switch_row,
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu")],
+    ])
+
+kb_menu_upload = types.ReplyKeyboardMarkup(
+    keyboard=[[types.KeyboardButton(text="✅ Готово"), types.KeyboardButton(text="❌ Отмена")]],
+    resize_keyboard=True
+)
+
+def save_image_as_webp(src_path: str, dst_path: str) -> None:
+    img = Image.open(src_path).convert("RGB")
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    img.save(dst_path, format="WEBP", quality=85)
+
+def pdf_to_webp_pages(pdf_path: str, out_dir: str, start_index: int) -> int:
+    """
+    Рендерит ВСЕ страницы PDF в out_dir как 001.webp, 002.webp...
+    Возвращает сколько страниц добавили.
+    """
+    pdf_doc = fitz.open(pdf_path)
+    added = 0
+    try:
+        for i in range(pdf_doc.page_count):
+            page = pdf_doc.load_page(i)
+            mat = fitz.Matrix(2, 2)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+
+            tmp_png = pdf_path.rsplit(".", 1)[0] + f"_{i}.png"
+            pix.save(tmp_png)
+
+            dst = os.path.join(out_dir, f"{start_index + added:03d}.webp")
+            save_image_as_webp(tmp_png, dst)
+            os.remove(tmp_png)
+            added += 1
+    finally:
+        pdf_doc.close()
+    return added
+
+async def render_menu(call: types.CallbackQuery, place_slug: str, page: int = 1):
+    pages = list_pages(place_slug)
+    if not pages:
+        await call.answer("Меню ещё не загружено", show_alert=True)
+        return
+
+    total = len(pages)
+    page = max(1, min(page, total))
+    path: Path = pages[page - 1]
+
+    await call.message.edit_media(
+        InputMediaPhoto(
+            media=FSInputFile(str(path)),
+            caption=f"Меню кофейни {PLACE_TITLE.get(place_slug, place_slug)}",
+        ),
+        reply_markup=build_menu_nav_kb(place_slug, page, total),
+    )
 
 @router.message(CommandStart())
 @check_referal
@@ -214,41 +325,66 @@ async def show_menu(call: types.CallbackQuery, *args, **kwargs):
         reply_markup=keyboard_menu,
     )
 
-@router.callback_query(F.data.contains("menu_"))
+# @router.callback_query(F.data.contains("menu_"))
+# @login_required_callback
+# async def show_menu_place(call: types.CallbackQuery, *args, **kwargs):
+    
+#     if call.data == 'menu_borodinskaya':
+#         keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_komendantskaya, key_menu]])
+
+#         await call.message.edit_media(
+#             types.InputMediaPhoto(
+#                 media=menu_b,
+#                 caption='Меню кофейни Бородинская',
+#                 parse_mode='HTML',
+#             ),
+#             reply_markup=keyboard
+#         )
+#     if call.data == 'menu_komendantskaya':
+#         keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_borodinskaya, key_menu]])
+#         await call.message.edit_media(
+#             types.InputMediaPhoto(
+#                 media=menu_k,
+#                 caption='Меню кофейни Комендантский',
+#                 parse_mode='HTML',
+#             ),
+#             reply_markup=keyboard
+#         )
+#     if call.data == 'menu_aptekarskaya':
+#         keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_borodinskaya, key_menu]])
+#         await call.message.edit_media(
+#             types.InputMediaPhoto(
+#                 media=menu_a,
+#                 caption='Меню кофеини Аптекарский',
+#                 parse_mode='HTML',
+#             ),
+#             reply_markup=keyboard
+#         )
+
+@router.callback_query(F.data.startswith("menu_place:"))
 @login_required_callback
 async def show_menu_place(call: types.CallbackQuery, *args, **kwargs):
-    
-    if call.data == 'menu_borodinskaya':
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_komendantskaya, key_menu]])
+    place_slug = call.data.split(":", 1)[1]
+    await render_menu(call, place_slug, page=1)
 
-        await call.message.edit_media(
-            types.InputMediaPhoto(
-                media=menu_b,
-                caption='Меню кофейни Бородинская',
-                parse_mode='HTML',
-            ),
-            reply_markup=keyboard
-        )
-    if call.data == 'menu_komendantskaya':
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_borodinskaya, key_menu]])
-        await call.message.edit_media(
-            types.InputMediaPhoto(
-                media=menu_k,
-                caption='Меню кофейни Комендантский',
-                parse_mode='HTML',
-            ),
-            reply_markup=keyboard
-        )
-    if call.data == 'menu_aptekarskaya':
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_borodinskaya, key_menu]])
-        await call.message.edit_media(
-            types.InputMediaPhoto(
-                media=menu_a,
-                caption='Меню кофеини Аптекарский',
-                parse_mode='HTML',
-            ),
-            reply_markup=keyboard
-        )
+
+@router.callback_query(F.data.startswith("menu_view:"))
+@login_required_callback
+async def show_menu_page(call: types.CallbackQuery, *args, **kwargs):
+    # menu_view:{place}:{page}
+    _, place_slug, page_s = call.data.split(":")
+    await render_menu(call, place_slug, page=int(page_s))
+
+
+@router.callback_query(F.data.in_(["menu_borodinskaya", "menu_komendantskaya", "menu_aptekarskaya"]))
+@login_required_callback
+async def legacy_menu_place(call: types.CallbackQuery, *args, **kwargs):
+    place_slug = PLACE_SLUG_BY_CB.get(call.data)
+    if not place_slug:
+        await call.answer("Неизвестная кофейня", show_alert=True)
+        return
+    await render_menu(call, place_slug, page=1)
+
 
 @router.callback_query(F.data == 'qr')
 @login_required_callback
@@ -521,19 +657,46 @@ async def cmd_update_menu(message: types.Message, session: AsyncSession, client:
     await state.set_state(UpdateMenuStates.choosing)
 
 
+# @router.message(StateFilter(UpdateMenuStates.choosing), F.text.in_(["Аптекарский", "Коменданский", "Бородинская"]))
+# async def process_menu_choice(message: types.Message, state: FSMContext):
+#     """
+#     Шаг 2. Пользователь нажал на одну из кнопок — запомним выбор и попросим прислать файл.
+#     """
+#     choice = message.text  # будет ровно один из трёх
+#     # Сохраним в FSMContext выбор пользователя, чтобы потом понять, куда сохранять
+#     await state.update_data(menu_choice=choice)
+
+#     # Сними клавиатуру, больше не нужна
+#     await message.answer(
+#         f"Вы выбрали «{choice}». Пришлите, пожалуйста, файл с новым меню (jpg или png).",
+#         reply_markup=types.ReplyKeyboardRemove(),
+#     )
+#     await state.set_state(UpdateMenuStates.waiting_file)
+
+
 @router.message(StateFilter(UpdateMenuStates.choosing), F.text.in_(["Аптекарский", "Коменданский", "Бородинская"]))
 async def process_menu_choice(message: types.Message, state: FSMContext):
-    """
-    Шаг 2. Пользователь нажал на одну из кнопок — запомним выбор и попросим прислать файл.
-    """
-    choice = message.text  # будет ровно один из трёх
-    # Сохраним в FSMContext выбор пользователя, чтобы потом понять, куда сохранять
+    choice = message.text
     await state.update_data(menu_choice=choice)
 
-    # Сними клавиатуру, больше не нужна
+    place_map = {
+        "Аптекарский": "aptekarskaya",
+        "Коменданский": "komendantskaya",
+        "Бородинская": "borodinskaya",
+    }
+    place_slug = place_map[choice]
+
+    # ✅ ОЧИСТКА старых страниц (чтобы новое меню начиналось с 001)
+    place_dir = ensure_place_dir(place_slug)
+    for p in place_dir.glob("*.webp"):
+        p.unlink()
+
     await message.answer(
-        f"Вы выбрали «{choice}». Пришлите, пожалуйста, файл с новым меню (jpg или png).",
-        reply_markup=types.ReplyKeyboardRemove(),
+        f"Вы выбрали «{choice}».\n"
+        f"Пришлите фото (jpg/png) или один/несколько PDF.\n"
+        f"Можно отправлять много сообщений подряд.\n"
+        f"Когда закончите — нажмите «✅ Готово».",
+        reply_markup=kb_menu_upload,
     )
     await state.set_state(UpdateMenuStates.waiting_file)
 
@@ -545,113 +708,219 @@ async def invalid_choice(message: types.Message):
     """
     await message.answer("Нужно выбрать одну из кнопок: Аптекарский, Коменданский или Бородинская.")
 
+# @router.message(StateFilter(UpdateMenuStates.waiting_file), F.content_type.in_({"photo", "document"}))
+# async def process_new_file(message: types.Message, state: FSMContext):
+#     """
+#     Шаг 3. Пользователь прислал файл. Если это картинка (jpg/png) — конвертим и сохраняем.
+#     Если это PDF — рендерим первую страницу и сохраняем как webp.
+#     """
+#     data = await state.get_data()
+#     choice: str = data.get("menu_choice")  # выбор пользователя
+
+#     # Словарь, куда сохраняем в зависимости от выбора:
+#     mapping = {
+#         "Аптекарский": "files/menu_a.webp",
+#         "Коменданский": "files/menu_k.webp",
+#         "Бородинская": "files/menu_b.webp",
+#     }
+#     target_path = mapping.get(choice)
+#     if not target_path:
+#         await message.answer("Не удалось определить, куда сохранять файл. Попробуйте ещё раз.")
+#         await state.clear()
+#         return
+
+#     # 5.1) Решаем, что именно прислали:
+#     is_pdf = False
+#     if message.photo:
+#         # Это обычная картинка
+#         file_id = message.photo[-1].file_id
+#         orig_filename = f"{file_id}.jpg"
+#     else:
+#         # Это document. Проверяем MIME и расширение
+#         doc = message.document
+#         mime = doc.mime_type or ""
+#         name = doc.file_name or ""
+#         # Если PDF (mime application/pdf или имя заканчивается на .pdf)
+#         if mime == "application/pdf" or name.lower().endswith(".pdf"):
+#             is_pdf = True
+#             file_id = doc.file_id
+#             orig_filename = name if name.lower().endswith(".pdf") else f"{file_id}.pdf"
+#         else:
+#             # Если не PDF и не картинка изначально (PNG/JPEG)
+#             if not mime.startswith("image/"):
+#                 await message.answer("Нужно прислать изображение (jpg/png) или PDF-файл.")
+#                 return
+#             file_id = doc.file_id
+#             orig_filename = name
+
+#     # 5.2) Скачиваем файл во временную папку tmp/
+#     os.makedirs("tmp", exist_ok=True)
+#     tmp_path = os.path.join("tmp", orig_filename)
+
+#     file = await message.bot.get_file(file_id)
+#     await message.bot.download_file(file.file_path, destination=tmp_path)
+
+#     # 5.3) Конвертация
+#     try:
+#         # Если это PDF, рендерим первую страницу через PyMuPDF
+#         if is_pdf:
+#             # Открываем PDF
+#             pdf_doc = fitz.open(tmp_path)
+#             if pdf_doc.page_count < 1:
+#                 raise RuntimeError("PDF пустой или не удалось прочитать страницы")
+#             page = pdf_doc.load_page(0)  # первая страница (индекс 0)
+#             # Рендерим страницу в pixmap (по умолчанию 72 DPI)
+#             mat = fitz.Matrix(2, 2)  # можно увеличить DPI, например, 144; здесь увеличиваем в 2 раза
+#             pix = page.get_pixmap(matrix=mat, alpha=False)
+#             # Сохраняем временный PNG: fitz может отдавать .png-байты
+#             tmp_img_path = tmp_path.rsplit(".", 1)[0] + ".png"
+#             pix.save(tmp_img_path)
+
+#             # Теперь открываем через PIL и конвертируем в WebP
+#             img = Image.open(tmp_img_path).convert("RGB")
+#             os.makedirs(os.path.dirname(target_path), exist_ok=True)
+#             img.save(target_path, format="WEBP", quality=85)
+
+#             # Удаляем промежуточный PNG
+#             os.remove(tmp_img_path)
+#             pdf_doc.close()
+
+#         else:
+#             # Обычное изображение (jpg/png)
+#             img = Image.open(tmp_path).convert("RGB")
+#             os.makedirs(os.path.dirname(target_path), exist_ok=True)
+#             img.save(target_path, format="WEBP", quality=85)
+
+#     except Exception as e:
+#         await message.answer(f"Не удалось сконвертировать файл: {e}")
+#         # Чистим временный файл
+#         try:
+#             os.remove(tmp_path)
+#         except:
+#             pass
+#         await state.clear()
+#         return
+
+#     # 5.4) Удаляем временный файл PDF или исходное изображение
+#     try:
+#         os.remove(tmp_path)
+#     except:
+#         pass
+
+#     # 5.5) Подтверждаем и показываем получившийся WebP (опционально)
+#     await message.answer(f"Меню «{choice}» обновлено успешно! Вот как оно теперь выглядит:")
+#     await message.answer_photo(FSInputFile(target_path))
+
+#     # Сбрасываем состояние
+#     await state.clear()
+
 @router.message(StateFilter(UpdateMenuStates.waiting_file), F.content_type.in_({"photo", "document"}))
 async def process_new_file(message: types.Message, state: FSMContext):
-    """
-    Шаг 3. Пользователь прислал файл. Если это картинка (jpg/png) — конвертим и сохраняем.
-    Если это PDF — рендерим первую страницу и сохраняем как webp.
-    """
     data = await state.get_data()
-    choice: str = data.get("menu_choice")  # выбор пользователя
+    choice: str = data.get("menu_choice")
 
-    # Словарь, куда сохраняем в зависимости от выбора:
-    mapping = {
-        "Аптекарский": "files/menu_a.webp",
-        "Коменданский": "files/menu_k.webp",
-        "Бородинская": "files/menu_b.webp",
+    place_map = {
+        "Аптекарский": "aptekarskaya",
+        "Коменданский": "komendantskaya",
+        "Бородинская": "borodinskaya",
     }
-    target_path = mapping.get(choice)
-    if not target_path:
-        await message.answer("Не удалось определить, куда сохранять файл. Попробуйте ещё раз.")
+    place_slug = place_map.get(choice)
+    if not place_slug:
+        await message.answer("Не удалось определить кофейню. Начните заново: /update_menu",
+                             reply_markup=types.ReplyKeyboardRemove())
         await state.clear()
         return
 
-    # 5.1) Решаем, что именно прислали:
+    out_dir = str(ensure_place_dir(place_slug))
+
+    # определить file_id + тип
     is_pdf = False
     if message.photo:
-        # Это обычная картинка
         file_id = message.photo[-1].file_id
         orig_filename = f"{file_id}.jpg"
     else:
-        # Это document. Проверяем MIME и расширение
         doc = message.document
         mime = doc.mime_type or ""
         name = doc.file_name or ""
-        # Если PDF (mime application/pdf или имя заканчивается на .pdf)
         if mime == "application/pdf" or name.lower().endswith(".pdf"):
             is_pdf = True
             file_id = doc.file_id
             orig_filename = name if name.lower().endswith(".pdf") else f"{file_id}.pdf"
         else:
-            # Если не PDF и не картинка изначально (PNG/JPEG)
             if not mime.startswith("image/"):
-                await message.answer("Нужно прислать изображение (jpg/png) или PDF-файл.")
+                await message.answer("Нужно прислать изображение (jpg/png) или PDF.")
                 return
             file_id = doc.file_id
-            orig_filename = name
+            orig_filename = name or f"{file_id}.img"
 
-    # 5.2) Скачиваем файл во временную папку tmp/
     os.makedirs("tmp", exist_ok=True)
     tmp_path = os.path.join("tmp", orig_filename)
 
     file = await message.bot.get_file(file_id)
     await message.bot.download_file(file.file_path, destination=tmp_path)
 
-    # 5.3) Конвертация
+    # ✅ LOCK на конкретную кофейню, чтобы next_index не считался параллельно
+    lock = MENU_UPLOAD_LOCKS.setdefault(place_slug, asyncio.Lock())
+
     try:
-        # Если это PDF, рендерим первую страницу через PyMuPDF
-        if is_pdf:
-            # Открываем PDF
-            pdf_doc = fitz.open(tmp_path)
-            if pdf_doc.page_count < 1:
-                raise RuntimeError("PDF пустой или не удалось прочитать страницы")
-            page = pdf_doc.load_page(0)  # первая страница (индекс 0)
-            # Рендерим страницу в pixmap (по умолчанию 72 DPI)
-            mat = fitz.Matrix(2, 2)  # можно увеличить DPI, например, 144; здесь увеличиваем в 2 раза
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            # Сохраняем временный PNG: fitz может отдавать .png-байты
-            tmp_img_path = tmp_path.rsplit(".", 1)[0] + ".png"
-            pix.save(tmp_img_path)
+        async with lock:
+            existing = list_pages(place_slug)
+            next_index = len(existing) + 1
 
-            # Теперь открываем через PIL и конвертируем в WebP
-            img = Image.open(tmp_img_path).convert("RGB")
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            img.save(target_path, format="WEBP", quality=85)
+            if is_pdf:
+                added = pdf_to_webp_pages(tmp_path, out_dir=out_dir, start_index=next_index)
+            else:
+                dst = os.path.join(out_dir, f"{next_index:03d}.webp")
+                save_image_as_webp(tmp_path, dst)
+                added = 1
 
-            # Удаляем промежуточный PNG
-            os.remove(tmp_img_path)
-            pdf_doc.close()
+            total_now = len(list_pages(place_slug))
 
-        else:
-            # Обычное изображение (jpg/png)
-            img = Image.open(tmp_path).convert("RGB")
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            img.save(target_path, format="WEBP", quality=85)
-
+        await message.answer(f"Добавлено страниц: {added}. Всего страниц сейчас: {total_now}.")
     except Exception as e:
-        await message.answer(f"Не удалось сконвертировать файл: {e}")
-        # Чистим временный файл
+        await message.answer(f"Не удалось обработать файл: {e}")
+    finally:
         try:
             os.remove(tmp_path)
         except:
             pass
-        await state.clear()
+
+
+
+@router.message(StateFilter(UpdateMenuStates.waiting_file), F.text == "✅ Готово")
+async def finish_menu_upload(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    choice: str = data.get("menu_choice")
+
+    place_map = {
+        "Аптекарский": "aptekarskaya",
+        "Коменданский": "komendantskaya",
+        "Бородинская": "borodinskaya",
+    }
+    place_slug = place_map.get(choice)
+    pages = list_pages(place_slug) if place_slug else []
+
+    await state.clear()
+    await message.answer("Готово ✅", reply_markup=types.ReplyKeyboardRemove())
+
+    if not pages:
+        await message.answer("Но страниц меню не найдено (ничего не загрузили).")
         return
 
-    # 5.4) Удаляем временный файл PDF или исходное изображение
-    try:
-        os.remove(tmp_path)
-    except:
-        pass
+    # показываем первую страницу
+    await message.answer_photo(
+        FSInputFile(str(pages[0])),
+        caption=f"Меню кофейни {PLACE_TITLE.get(place_slug, place_slug)}",
+        reply_markup=build_menu_nav_kb(place_slug, 1, len(pages))
+    )
 
-    # 5.5) Подтверждаем и показываем получившийся WebP (опционально)
-    await message.answer(f"Меню «{choice}» обновлено успешно! Вот как оно теперь выглядит:")
-    await message.answer_photo(FSInputFile(target_path))
-
-    # Сбрасываем состояние
+@router.message(StateFilter(UpdateMenuStates.waiting_file), F.text == "❌ Отмена")
+async def cancel_menu_upload(message: types.Message, state: FSMContext):
     await state.clear()
+    await message.answer("Отменено.", reply_markup=types.ReplyKeyboardRemove())
+
 
 
 @router.message(StateFilter(UpdateMenuStates.waiting_file))
 async def invalid_file(message: types.Message):
-    await message.answer("Пожалуйста, пришлите файл формата jpg или png.")
+    await message.answer("Пожалуйста, пришлите фото (jpg/png) или PDF. Затем нажмите «✅ Готово».")
