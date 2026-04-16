@@ -3,21 +3,21 @@ import os
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 import redis
+from settings import settings
 
-user_db = os.getenv('user_db')
-password_db = os.getenv('password_db')
-database = os.getenv('database')
-host_db = os.getenv('host_db')
+redis_host = settings.REDIS_HOST
+redis_port = settings.REDIS_PORT
+redis_db = settings.REDIS_DB
 
-redis_host = os.getenv('redis_host', 'localhost')
-redis_port = os.getenv('redis_port', 6379)
-redis_db = os.getenv('redis_db', 3)
-
-
-SQLALCHEMY_DATABASE_URL = f'postgresql+asyncpg://{user_db}:{password_db}@{host_db}/{database}'
+SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
 engine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=False)
 
-SQLALCHEMY_SYNC_URL = f'postgresql://{user_db}:{password_db}@{host_db}/{database}'
+def get_sync_url(url: str) -> str:
+    if not url:
+        return ""
+    return url.replace("+asyncpg", "").replace("+aiosqlite", "")
+
+SQLALCHEMY_SYNC_URL = get_sync_url(SQLALCHEMY_DATABASE_URL)
 
 Base = declarative_base()
 

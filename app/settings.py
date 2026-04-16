@@ -29,6 +29,9 @@ class Settings:
 
     @property
     def DATABASE_URL(self) -> str:
+        env_url = os.getenv('DATABASE_URL')
+        if env_url:
+            return env_url
         if not self.USER_DB:
             return ""
         return f"postgresql+asyncpg://{self.USER_DB}:{self.PASSWORD_DB}@{self.HOST_DB}/{self.DATABASE}"
