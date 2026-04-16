@@ -1,137 +1,112 @@
 import pika
 import json
 import time
-from datetime import datetime, timedelta
 import asyncio
-import os
-import requests
+import logging
+import aiohttp
+from datetime import datetime, timedelta
 from threading import Thread
+from app.settings import settings
 
-
-token = os.getenv('token')
-rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
-rabbitmq_port = os.getenv('RABBITMQ_PORT', 5672)
-rabbitmq_user = os.getenv('RABBITMQ_USER', 'user')
-rabbitmq_password = os.getenv('RABBITMQ_PASSWORD', 'password')
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 DELAY_QUEUE = "delayed_tasks"
 MAIN_QUEUE = "nord_referal"
-DELAY_SECONDS = 60 * 60 * 3  # 3 часа в секундах
+DELAY_SECONDS = 60 * 60 * 3  # 3 часа
 
-
-credentials = pika.PlainCredentials(rabbitmq_user, rabbitmq_password)
-
-
-
-def process_user_id(user_id):
+async def process_user_id(user_id, session: aiohttp.ClientSession):
     """
-    Обрабатывает user_id.
-    Возвращает False, если задача не выполнена, True - если выполнена.
+    Отправляет уведомление администратору о необходимости пополнения бонусов.
     """
     try:
-        response = requests.post(
-            url=f'https://api.telegram.org/bot{token}/sendMessage',
-            data={'chat_id': 999616091, 'text': f'Пополнить {user_id} бонусы'}
-        )
-        if response.status_code != 200:
+        url = f'https://api.telegram.org/bot{settings.BOT_TOKEN}/sendMessage'
+        # Используем первый ID из списка админов для уведомлений
+        admin_id = settings.ADMIN_IDS[0] if settings.ADMIN_IDS else None
+        if not admin_id:
+            logger.error("No ADMIN_IDS configured")
             return False
-        return True
+
+        data = {'chat_id': admin_id, 'text': f'Пополнить бонусы для пользователя ID: {user_id}'}
+        async with session.post(url, data=data, proxy=settings.PROXY_URL) as response:
+            if response.status != 200:
+                text = await response.text()
+                logger.error(f"TG API error: {response.status} - {text}")
+                return False
+            return True
     except Exception as e:
-        print(f"Error processing user_id {user_id}: {e}")
+        logger.exception(f"Error processing user_id {user_id}: {e}")
         return False
 
-def handle_delayed_tasks():
-    """
-    Проверяет отложенные задачи и возвращает их в основную очередь,
-    если истекло время задержки.
-    """
-    connection = pika.BlockingConnection(pika.ConnectionParameters(rabbitmq_host, credentials=credentials))
+async def consume_messages():
+    credentials = pika.PlainCredentials(settings.RABBITMQ_USER, settings.RABBITMQ_PASSWORD)
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters(host=settings.RABBITMQ_HOST, port=settings.RABBITMQ_PORT, credentials=credentials)
+    )
     channel = connection.channel()
-
-    channel.queue_declare(queue=DELAY_QUEUE, durable=True)
     channel.queue_declare(queue=MAIN_QUEUE, durable=True)
+    channel.queue_declare(queue=DELAY_QUEUE, durable=True)
 
+    async with aiohttp.ClientSession() as session:
+        while True:
+            method_frame, header_frame, body = channel.basic_get(MAIN_QUEUE, auto_ack=False)
+            if method_frame:
+                try:
+                    message = json.loads(body.decode())
+                    user_id = message.get("user_id")
+
+                    if await process_user_id(user_id, session):
+                        logger.info(f"Successfully processed user_id {user_id}")
+                        channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+                    else:
+                        logger.warning(f"Failed to process user_id {user_id}, scheduling retry.")
+                        retry_at = datetime.now() + timedelta(seconds=DELAY_SECONDS)
+                        delayed_message = json.dumps({"user_id": user_id, "retry_at": retry_at.isoformat()})
+                        channel.basic_publish(
+                            exchange="",
+                            routing_key=DELAY_QUEUE,
+                            body=delayed_message,
+                            properties=pika.BasicProperties(delivery_mode=2)
+                        )
+                        channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+                except Exception as e:
+                    logger.error(f"Error handling message: {e}")
+                    channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=True)
+
+            # Также проверяем отложенную очередь
+            check_delayed_tasks(channel)
+
+            await asyncio.sleep(1)
+
+def check_delayed_tasks(channel):
     while True:
         method_frame, header_frame, body = channel.basic_get(DELAY_QUEUE, auto_ack=False)
+        if not method_frame:
+            break
 
-        while method_frame:
+        try:
             message = json.loads(body.decode())
             retry_at = datetime.fromisoformat(message["retry_at"])
-            now = datetime.now()
-
-            if now >= retry_at:
-                print(f"Requeueing user_id {message['user_id']} into main queue.")
-                # Переместить задачу обратно в основную очередь
+            if datetime.now() >= retry_at:
+                logger.info(f"Requeueing user_id {message['user_id']} into main queue.")
                 channel.basic_publish(
                     exchange="",
                     routing_key=MAIN_QUEUE,
                     body=json.dumps({"user_id": message["user_id"]}),
-                    properties=pika.BasicProperties(
-                        delivery_mode=2,  # Сделать сообщение устойчивым
-                    ),
+                    properties=pika.BasicProperties(delivery_mode=2)
                 )
                 channel.basic_ack(delivery_tag=method_frame.delivery_tag)
             else:
-                # Если время еще не истекло, оставляем задачу в очереди
                 channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=True)
-
-            # Проверяем следующее сообщение
-            method_frame, header_frame, body = channel.basic_get(DELAY_QUEUE, auto_ack=False)
-
-        # Ждем перед следующей проверкой
-        time.sleep(DELAY_SECONDS)
-
-
-
-
-def consumer_callback(ch, method, properties, body):
-    message = json.loads(body.decode())
-    try:
-        user_id = message.get("user_id")
-    except (KeyError, AttributeError):
-        print(f"Invalid message format: {message}")
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-        return
-
-    if process_user_id(user_id):
-        print(f"Successfully processed user_id {user_id}")
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-    else:
-        print(f"Failed to process user_id {user_id}, scheduling retry.")
-        # Добавить задачу в отложенную очередь
-        retry_at = datetime.now() + timedelta(seconds=DELAY_SECONDS)
-        delayed_message = json.dumps({"user_id": int(user_id) + 1, "retry_at": retry_at.isoformat()})
-
-        ch.basic_publish(
-            exchange="",
-            routing_key=DELAY_QUEUE,
-            body=delayed_message,
-            properties=pika.BasicProperties(
-                delivery_mode=2,  # Сделать сообщение устойчивым
-            ),
-        )
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-
-
-def start_consumer():
-    """
-    Основной консумер для обработки задач из основной очереди.
-    """
-    connection = pika.BlockingConnection(pika.ConnectionParameters(rabbitmq_host, credentials=credentials))
-    channel = connection.channel()
-
-    channel.queue_declare(queue=MAIN_QUEUE, durable=True)
-
-    channel.basic_consume(
-        queue=MAIN_QUEUE,
-        on_message_callback=consumer_callback
-    )
-
-    print("Waiting for messages in main queue. To exit, press CTRL+C.")
-    channel.start_consuming()
-
+                break # Остальные в очереди еще позже должны быть
+        except Exception as e:
+            logger.error(f"Error checking delayed task: {e}")
+            channel.basic_ack(delivery_tag=method_frame.delivery_tag)
 
 if __name__ == "__main__":
-    # Запуск проверки отложенных задач каждые 3 часа
-    Thread(target=start_consumer).start()
-    Thread(target=handle_delayed_tasks).start()
+    logger.info("Starting task consumer...")
+    try:
+        asyncio.run(consume_messages())
+    except KeyboardInterrupt:
+        logger.info("Consumer stopped by user")

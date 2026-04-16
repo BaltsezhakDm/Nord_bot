@@ -1,40 +1,56 @@
 import os
 import yaml
 import json
-
 import asyncio
+import logging
+import aiohttp
+from pathlib import Path
+from typing import Optional
+
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.deep_linking import create_start_link
 from aiogram.filters import CommandStart, Command, StateFilter
-from aiogram.types import FSInputFile, InputMediaPhoto
-
+from aiogram.types import FSInputFile, InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-
 from PIL import Image
 import fitz
 
-from api import CRM, Office
+from api import CRM, Office, load_cookies
 from model import Customers, Places, LogEntry
 from fsm import Form, AskForm, MessageForm, UpdateMenuStates
 from utils import encode_user_id, encode_json, check_referal
-from logger import setup_logger
-from auth import login_required_callback, login_required, admin_required
-from tasks import send_to_queue
 from keyboards import (
     keyboard_main, keyboard_back, keyboard_menu,
     keyboard_social, keyboard_review, clean_keyboard,
     key_menu, keyboard_confirm, key_borodinskaya, key_komendantskaya, kb
 )
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pathlib import Path
 from db import r
+from settings import settings
 
+logger = logging.getLogger(__name__)
+router = Router(name=__name__)
+
+# Загрузка сообщений
+try:
+    with open('app/messages.yaml', 'r', encoding='utf-8') as f:
+        messages = yaml.safe_load(f)
+except Exception as e:
+    logger.error(f"Failed to load messages.yaml: {e}")
+    messages = {}
+
+# Ресурсы
 MENUS_DIR = Path("files/menus")
-
-MENU_UPLOAD_LOCKS: dict[str, asyncio.Lock] = {}
-
+PHOTO_NORD = FSInputFile('files/nord.webp')
+MENU_IMG = FSInputFile('files/menu.webp')
+ABOUT_IMG = FSInputFile('files/about.webp')
+REFERAL_IMG = FSInputFile('files/referal.webp')
+ADDRESS_IMG = FSInputFile('files/address.webp')
+SOCIAL_IMG = FSInputFile('files/about.webp')
+REVIEW_IMG = FSInputFile('files/review.webp')
+QUESTION_IMG = FSInputFile('files/question.webp')
+BALANCE_IMG = FSInputFile('files/balance.webp')
 
 PLACE_SLUG_BY_CB = {
     "menu_borodinskaya": "borodinskaya",
@@ -48,29 +64,21 @@ PLACE_TITLE = {
     "aptekarskaya": "Аптекарский",
 }
 
-logger = setup_logger()
-router = Router(name=__name__)
+MENU_UPLOAD_LOCKS: dict[str, asyncio.Lock] = {}
 
-with open('app/messages.yaml', 'r', encoding='utf-8') as f:
-    messages = yaml.safe_load(f)
+# Глобальные сессии будут инициализированы в middleware или при первом запросе
+# Но лучше передавать их явно. Для простоты будем использовать одну сессию на бота
+# или создавать временные. В данном случае, так как бот асинхронный,
+# мы добавим создание сессии CRM/Office в роутеры.
 
-photo_nord = FSInputFile('files/nord.webp')
-menu_img = FSInputFile('files/menu.webp')
-about_img = FSInputFile('files/about.webp')
-referal_img = FSInputFile('files/referal.webp')
-address_img = FSInputFile('files/address.webp')
-social_img = FSInputFile('files/about.webp')
-review_img = FSInputFile('files/review.webp')
-question_img = FSInputFile('files/question.webp')
-balance_img = FSInputFile('files/balance.webp')
-menu_b = FSInputFile('files/menu_b.webp')
-menu_k = FSInputFile('files/menu_k.webp')
-menu_a = FSInputFile('files/menu_a.webp')
+async def get_api_clients():
+    session = aiohttp.ClientSession()
+    api_client = CRM(login=settings.LOGIN_API, password=settings.PASSWORD_API, session=session)
+    lk_client = Office(login=settings.LOGIN_LK, password=settings.PASSWORD_LK, session=session)
+    await load_cookies(session, lk_client.cookie_file)
+    return api_client, lk_client, session
 
-api = CRM(login=os.getenv('login_api'), password=os.getenv('password_api'))
-lk = Office(login=os.getenv('login_lk'), password=os.getenv('password_lk'))
-
-
+# Вспомогательные функции для меню
 def ensure_place_dir(place_slug: str) -> Path:
     d = MENUS_DIR / place_slug
     d.mkdir(parents=True, exist_ok=True)
@@ -78,26 +86,16 @@ def ensure_place_dir(place_slug: str) -> Path:
 
 def list_pages(place_slug: str) -> list[Path]:
     d = ensure_place_dir(place_slug)
-    pages = sorted(d.glob("*.webp"))
-    # на случай старой схемы — если папка пустая, можно попробовать подтянуть старый файл:
-    # (опционально) миграция: files/menu_b.webp -> files/menus/borodinskaya/001.webp
-    return pages
-
-def page_path(place_slug: str, page: int) -> Path:
-    # 1 -> 001.webp
-    return ensure_place_dir(place_slug) / f"{page:03d}.webp"
-
+    return sorted(d.glob("*.webp"))
 
 def build_menu_nav_kb(place_slug: str, page: int, total: int) -> InlineKeyboardMarkup:
     prev_page = total if page <= 1 else (page - 1)
     next_page = 1 if page >= total else (page + 1)
 
-    # callback_data формата: menu_view:{place}:{page}
     left = InlineKeyboardButton(text="◀️", callback_data=f"menu_view:{place_slug}:{prev_page}")
     mid  = InlineKeyboardButton(text=f"{page}/{total}", callback_data="_")
     right= InlineKeyboardButton(text="▶️", callback_data=f"menu_view:{place_slug}:{next_page}")
 
-    # кнопки переключения кофейни (как было у тебя через key_* можно оставить, но проще так)
     switch_row = [
         InlineKeyboardButton(text="Бородинская", callback_data="menu_place:borodinskaya"),
         InlineKeyboardButton(text="Комендантский", callback_data="menu_place:komendantskaya"),
@@ -121,10 +119,6 @@ def save_image_as_webp(src_path: str, dst_path: str) -> None:
     img.save(dst_path, format="WEBP", quality=85)
 
 def pdf_to_webp_pages(pdf_path: str, out_dir: str, start_index: int) -> int:
-    """
-    Рендерит ВСЕ страницы PDF в out_dir как 001.webp, 002.webp...
-    Возвращает сколько страниц добавили.
-    """
     pdf_doc = fitz.open(pdf_path)
     added = 0
     try:
@@ -132,10 +126,8 @@ def pdf_to_webp_pages(pdf_path: str, out_dir: str, start_index: int) -> int:
             page = pdf_doc.load_page(i)
             mat = fitz.Matrix(2, 2)
             pix = page.get_pixmap(matrix=mat, alpha=False)
-
             tmp_png = pdf_path.rsplit(".", 1)[0] + f"_{i}.png"
             pix.save(tmp_png)
-
             dst = os.path.join(out_dir, f"{start_index + added:03d}.webp")
             save_image_as_webp(tmp_png, dst)
             os.remove(tmp_png)
@@ -162,765 +154,413 @@ async def render_menu(call: types.CallbackQuery, place_slug: str, page: int = 1)
         reply_markup=build_menu_nav_kb(place_slug, page, total),
     )
 
+# Обработчики
 @router.message(CommandStart())
 @check_referal
 async def start_message(message: types.Message, session: AsyncSession, state: FSMContext, referal_data: dict):
-    '''Сообщение при старте бота'''
     await state.set_state(Form.ref)
     await state.update_data(**referal_data)
-    await state.update_data(message_id=message.message_id)
 
     client = await Customers.find(message.chat.id, db=session)
 
     if client:
         await state.clear()
-        message = await message.answer(
-            f'С возвращением, {message.chat.first_name}!',
-            reply_markup=clean_keyboard,
-            )
+        await message.answer(f'С возвращением, {message.chat.first_name}!', reply_markup=clean_keyboard)
         await message.bot.send_photo(
             message.chat.id,
-            caption=f'Выберите раздел',
-            photo=photo_nord,
+            caption='Выберите раздел',
+            photo=PHOTO_NORD,
             reply_markup=keyboard_main,
             parse_mode='HTML',
         )
     else:
-        button_phone = types.KeyboardButton(text="Телефон",
-                                            request_contact=True)
-        keyboard = types.ReplyKeyboardMarkup(keyboard=[[button_phone]],
-                                             resize_keyboard=True)
+        button_phone = types.KeyboardButton(text="Телефон", request_contact=True)
+        keyboard = types.ReplyKeyboardMarkup(keyboard=[[button_phone]], resize_keyboard=True)
         
-        text = messages.get('start_text_1').format(username=message.chat.first_name)
-        text += '\n' + messages.get('start_text_2')
-        text += '\n\n' + messages.get('start_text_3')
+        text = messages.get('start_text_1', "").format(username=message.chat.first_name)
+        text += '\n' + messages.get('start_text_2', "")
+        text += '\n\n' + messages.get('start_text_3', "")
 
         await message.bot.send_photo(
             message.chat.id,
             caption=text,
-            photo=photo_nord,
+            photo=PHOTO_NORD,
             reply_markup=keyboard,
             parse_mode='HTML',
         )
 
-#kos place tg anal
 @router.message(F.contact)
 async def contact(message: types.Message, session: AsyncSession, state: FSMContext):
-    if message.contact:
-        await state.set_state(Form.number)
+    if not message.contact:
+        return
 
-        data = await state.get_data()
-        print(data)
+    await state.set_state(Form.number)
+    data = await state.get_data()
+    phone_number = int(message.contact.phone_number[-10:])
 
-        phone_number = int(message.contact.phone_number[-10:])
-        client = api.find_client(phone_number)
+    async with aiohttp.ClientSession() as http_session:
+        api_client = CRM(settings.LOGIN_API, settings.PASSWORD_API, http_session)
+        lk_client = Office(settings.LOGIN_LK, settings.PASSWORD_LK, http_session)
+        await load_cookies(http_session, lk_client.cookie_file)
+
+        client = await api_client.find_client(phone_number)
         if client:
             await Customers.create(
                 session,
                 message.chat.id,
                 int(client['id']),
-                f"{client.get('firstName')} {client.get('lastName')}",
+                f"{client.get('firstName', '')} {client.get('lastName', '')}".strip(),
                 phone_number=phone_number,
                 place_id=data.get('place_id'),
                 referal_id=data.get('user_id'),
             )
-            if client['tokens'] == [] or str(phone_number) not in [token['key'] for token in client['tokens']]:
-                lk.create_token(client.get('id'), phone_number)
+            tokens = client.get('tokens', [])
+            if not tokens or str(phone_number) not in [token.get('key') for token in tokens]:
+                await lk_client.create_token(client.get('id'), phone_number)
 
             await state.clear()
             await message.answer(text='Ваш номер уже зарегистрирован!', reply_markup=clean_keyboard)
             await message.bot.send_photo(
                 chat_id=message.chat.id,
-                photo=photo_nord,
-                caption='Выбрете раздел:',
+                photo=PHOTO_NORD,
+                caption='Выберите раздел:',
                 reply_markup=keyboard_main
             )
-
         else:
-            full_name = f'{message.from_user.first_name} {message.from_user.last_name or ""}'
+            full_name = f'{message.from_user.first_name} {message.from_user.last_name or ""}'.strip()
             client_db = await Customers.find(message.chat.id, session)
             if not client_db:
-                new_client = api.create(
-                    full_name,
-                    phone_number,
-                    message.chat.id,
-                )
+                new_client = await api_client.create(full_name, phone_number, message.chat.id)
+                if new_client and 'id' in new_client:
+                    await Customers.create(
+                        session,
+                        message.chat.id,
+                        new_client.get('id'),
+                        full_name,
+                        phone_number=phone_number,
+                        place_id=data.get('place_id'),
+                        referal_id=data.get('user_id'),
+                    )
+                    await lk_client.create_token(new_client.get('id'), phone_number)
+                    await lk_client.add_credit(new_client.get('id'), 100)
 
-                await Customers.create(
-                    session,
-                    message.chat.id,
-                    new_client.get('id'),
-                    full_name,
-                    phone_number=phone_number,
-                    place_id=data.get('place_id'),
-                    referal_id=data.get('user_id'),
-                )
-
-                lk.create_token(new_client.get('id'), phone_number)
-                lk.add_credit(new_client.get('id'), 100)
-
-                log_entry = LogEntry.create_log(
-                    user_id=message.chat.id,
-                    command='register new customer in qresto',
-                    status='Success',
-                    error_message=None
-                )
-
-                if data.get('user_id'):
-                    send_to_queue(data.get('user_id'))
-                    log_entry.command = f'register new customer in qresto with referal {data.get("user_id")}'
-
-                session.add(log_entry)
-                await session.commit()
+                    if data.get('user_id'):
+                        from tasks import send_to_queue
+                        send_to_queue(data.get('user_id'))
 
             await state.clear()
             await message.answer('Успешная регистрация!', reply_markup=clean_keyboard)
             await message.bot.send_photo(
                 chat_id=message.chat.id,
-                photo=photo_nord,
-                caption='Выбрете раздел:',
+                photo=PHOTO_NORD,
+                caption='Выберите раздел:',
                 reply_markup=keyboard_main
             )
-    await state.clear()
-
 
 @router.callback_query(F.data == "back")
-@login_required_callback
-async def show_menu(call: types.CallbackQuery, session: AsyncSession, client: Customers, state: FSMContext, *args, **kwargs):
+async def back_to_main(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
-
     await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=photo_nord,
-            caption='Выберете новый раздел',
-            parse_mode='HTML',
-        ),
+        types.InputMediaPhoto(media=PHOTO_NORD, caption='Выберите новый раздел'),
         reply_markup=keyboard_main,
     )
 
-
 @router.callback_query(F.data == "about")
-async def show_about(call: types.CallbackQuery, *args, **kwargs):
-
+async def show_about(call: types.CallbackQuery):
     await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=about_img,
-            caption=messages.get('about'),
-            parse_mode='HTML',
-        ),
+        types.InputMediaPhoto(media=ABOUT_IMG, caption=messages.get('about', ""), parse_mode='HTML'),
         reply_markup=keyboard_back
     )
 
-
 @router.callback_query(F.data == "menu")
-@login_required_callback
-async def show_menu(call: types.CallbackQuery, *args, **kwargs):
-
+async def show_menu_categories(call: types.CallbackQuery):
     await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=menu_img,
-            caption='Выберите кофейню:',
-            parse_mode='HTML',
-        ),
+        types.InputMediaPhoto(media=MENU_IMG, caption='Выберите кофейню:'),
         reply_markup=keyboard_menu,
     )
 
-# @router.callback_query(F.data.contains("menu_"))
-# @login_required_callback
-# async def show_menu_place(call: types.CallbackQuery, *args, **kwargs):
-    
-#     if call.data == 'menu_borodinskaya':
-#         keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_komendantskaya, key_menu]])
-
-#         await call.message.edit_media(
-#             types.InputMediaPhoto(
-#                 media=menu_b,
-#                 caption='Меню кофейни Бородинская',
-#                 parse_mode='HTML',
-#             ),
-#             reply_markup=keyboard
-#         )
-#     if call.data == 'menu_komendantskaya':
-#         keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_borodinskaya, key_menu]])
-#         await call.message.edit_media(
-#             types.InputMediaPhoto(
-#                 media=menu_k,
-#                 caption='Меню кофейни Комендантский',
-#                 parse_mode='HTML',
-#             ),
-#             reply_markup=keyboard
-#         )
-#     if call.data == 'menu_aptekarskaya':
-#         keyboard = types.InlineKeyboardMarkup(inline_keyboard = [[key_borodinskaya, key_menu]])
-#         await call.message.edit_media(
-#             types.InputMediaPhoto(
-#                 media=menu_a,
-#                 caption='Меню кофеини Аптекарский',
-#                 parse_mode='HTML',
-#             ),
-#             reply_markup=keyboard
-#         )
-
 @router.callback_query(F.data.startswith("menu_place:"))
-@login_required_callback
-async def show_menu_place(call: types.CallbackQuery, *args, **kwargs):
+async def show_menu_place_cb(call: types.CallbackQuery):
     place_slug = call.data.split(":", 1)[1]
     await render_menu(call, place_slug, page=1)
 
-
 @router.callback_query(F.data.startswith("menu_view:"))
-@login_required_callback
-async def show_menu_page(call: types.CallbackQuery, *args, **kwargs):
-    # menu_view:{place}:{page}
+async def show_menu_page_cb(call: types.CallbackQuery):
     _, place_slug, page_s = call.data.split(":")
     await render_menu(call, place_slug, page=int(page_s))
 
-
 @router.callback_query(F.data.in_(["menu_borodinskaya", "menu_komendantskaya", "menu_aptekarskaya"]))
-@login_required_callback
-async def legacy_menu_place(call: types.CallbackQuery, *args, **kwargs):
+async def legacy_menu_place_cb(call: types.CallbackQuery):
     place_slug = PLACE_SLUG_BY_CB.get(call.data)
-    if not place_slug:
-        await call.answer("Неизвестная кофейня", show_alert=True)
-        return
-    await render_menu(call, place_slug, page=1)
-
+    if place_slug:
+        await render_menu(call, place_slug, page=1)
 
 @router.callback_query(F.data == 'qr')
-@login_required_callback
-async def show_qr(call: types.CallbackQuery, session: AsyncSession, client: Customers, *args, **kwargs):
-    qr = api.qr_code(client.phone_number)
+async def show_qr_cb(call: types.CallbackQuery, session: AsyncSession):
+    client = await Customers.find(call.from_user.id, session)
+    if not client: return
 
-    await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=qr,
-            caption='Qr код',
-            parse_mode='HTML',
-        ),
-        reply_markup=keyboard_back,
-    )
-
+    async with aiohttp.ClientSession() as http_session:
+        api_client = CRM(settings.LOGIN_API, settings.PASSWORD_API, http_session)
+        qr = api_client.qr_code(client.phone_number)
+        await call.message.edit_media(
+            types.InputMediaPhoto(media=qr, caption='Ваш QR-код'),
+            reply_markup=keyboard_back,
+        )
 
 @router.callback_query(F.data == 'balance')
-@login_required_callback
-async def show_balance(call: types.CallbackQuery, session: AsyncSession, client: Customers, *args, **kwargs):
-    balance = api.get_balance(client.phone_number)
+async def show_balance_cb(call: types.CallbackQuery, session: AsyncSession):
+    client = await Customers.find(call.from_user.id, session)
+    if not client: return
 
-    await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=balance_img,
-            caption=f'Ваш баланс: {balance} баллов',
-            parse_mode='HTML',
-        ),
-        reply_markup=keyboard_back,
-    )
+    async with aiohttp.ClientSession() as http_session:
+        api_client = CRM(settings.LOGIN_API, settings.PASSWORD_API, http_session)
+        balance = await api_client.get_balance(client.phone_number)
+        await call.message.edit_media(
+            types.InputMediaPhoto(media=BALANCE_IMG, caption=f'Ваш баланс: {balance} баллов'),
+            reply_markup=keyboard_back,
+        )
 
+@router.callback_query(F.data.startswith('history'))
+async def show_history_cb(call: types.CallbackQuery, session: AsyncSession):
+    client = await Customers.find(call.from_user.id, session)
+    if not client: return
 
-@router.callback_query(F.data.contains('history'))
-@login_required_callback
-async def show_history(call: types.CallbackQuery, session: AsyncSession, client: Customers, *args, **kwargs):
-    '''Вывод истории транзакций пользователя'''
-
-    if r.get(f'history:{client.id}'):
-        history = json.loads(r.get(f'history:{client.id}'))
+    history_key = f'history:{client.id}'
+    history_raw = r.get(history_key)
+    if history_raw:
+        history = json.loads(history_raw)
     else:
-        history = api.get_history(client.phone_number)
-        r.set(f'history:{client.id}', json.dumps(history), ex=120)
+        async with aiohttp.ClientSession() as http_session:
+            api_client = CRM(settings.LOGIN_API, settings.PASSWORD_API, http_session)
+            history = await api_client.get_history(client.phone_number)
+            r.set(history_key, json.dumps(history), ex=120)
+
     page_command = call.data.split('&page=')
     page = int(page_command[1]) if len(page_command) == 2 else 1
 
-    if len(history) > 6 and isinstance(history, list):
-        pages_count = len(history) // 6 + 1
-        left = page-1 if page != 1 else pages_count
-        right = page+1 if page != pages_count else 1
-        left_button = types.InlineKeyboardButton(
-            text="←", callback_data=f'history&page={left}')
-        page_button = types.InlineKeyboardButton(
-            text=f"{str(page)}/{str(pages_count)}", callback_data='_')
-        right_button = types.InlineKeyboardButton(
-            text="→", callback_data=f'history&page={right}')
-        buttons = types.InlineKeyboardMarkup(
-            inline_keyboard=[(left_button, page_button, right_button), [key_menu]])
+    if history and isinstance(history, list) and len(history) > 6:
+        pages_count = (len(history) + 5) // 6
+        page = max(1, min(page, pages_count))
 
-        if page == 1:
-            await call.message.edit_media(
-                types.InputMediaPhoto(
-                    media=balance_img,
-                    caption='{}'.format(''.join(history[(page-1)*6:page*6])),
-                    parse_mode='HTML',
-                ),
-                reply_markup=buttons,
-            )
-        else:
-            await call.message.edit_caption(
-                caption='{}'.format(''.join(history[(page-2)*6:page*6])),
-                parse_mode='HTML',
-                reply_markup=buttons,
-            )
+        left = page - 1 if page > 1 else pages_count
+        right = page + 1 if page < pages_count else 1
 
-    else:
+        buttons = types.InlineKeyboardMarkup(inline_keyboard=[
+            [
+                types.InlineKeyboardButton(text="←", callback_data=f'history&page={left}'),
+                types.InlineKeyboardButton(text=f"{page}/{pages_count}", callback_data='_'),
+                types.InlineKeyboardButton(text="→", callback_data=f'history&page={right}'),
+            ],
+            [key_menu]
+        ])
+
+        history_text = ''.join(history[(page-1)*6:page*6])
         await call.message.edit_media(
-            types.InputMediaPhoto(
-                media=balance_img,
-                caption='{}'.format(''.join(history)),
-                parse_mode='HTML',
-            ),
+            types.InputMediaPhoto(media=BALANCE_IMG, caption=history_text or "Транзакции отсутствуют"),
+            reply_markup=buttons,
+        )
+    else:
+        history_text = ''.join(history) if history else "Транзакции отсутствуют"
+        await call.message.edit_media(
+            types.InputMediaPhoto(media=BALANCE_IMG, caption=history_text),
             reply_markup=keyboard_back,
         )
 
-
 @router.callback_query(F.data == 'invite')
-@login_required_callback
-async def ref_account(call: types.CallbackQuery, session: AsyncSession, client: Customers):
-    user_id = encode_user_id(int(client.id))
-    link = await create_start_link(call.bot, user_id)
+async def ref_account_cb(call: types.CallbackQuery, session: AsyncSession):
+    client = await Customers.find(call.from_user.id, session)
+    if not client: return
+
+    user_id_encoded = encode_user_id(int(client.id))
+    link = await create_start_link(call.bot, user_id_encoded)
 
     await call.message.edit_media(
         types.InputMediaPhoto(
-            media=referal_img,
-            caption=f'Пригласи друга и после его первой покупки получи 100 бонусов (начисление происходит в течение 12 часов)!\n<b><code>{link}</code></b>\n(нажмите на ссылку, чтобы скопировать)',
+            media=REFERAL_IMG,
+            caption=f'Пригласи друга и после его первой покупки получи 100 бонусов!\n<b><code>{link}</code></b>',
             parse_mode='HTML',
         ),
         reply_markup=keyboard_back,
     )
-
-
-@router.callback_query(F.data == 'how_to_collect')
-@login_required_callback
-async def how_to_collect(call: types.CallbackQuery, *args, **kwargs):
-    message = messages.get('start_text_1').format(username=call.message.chat.first_name) \
-        + '\n' + messages.get('start_text_2')
-
-    await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=referal_img,
-            caption=message,
-            parse_mode='HTML',
-        ),
-        reply_markup=keyboard_back,
-    )
-
 
 @router.callback_query(F.data == 'address')
-async def address(call: types.CallbackQuery, *args, **kwargs):
-
+async def address_cb(call: types.CallbackQuery):
     await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=address_img,
-            caption=messages.get('address'),
-            parse_mode='HTML',
-        ),
+        types.InputMediaPhoto(media=ADDRESS_IMG, caption=messages.get('address', ""), parse_mode='HTML'),
         reply_markup=keyboard_back,
     )
-
 
 @router.callback_query(F.data == 'ask')
-@login_required_callback
-async def ask(call: types.CallbackQuery, *args,  state: FSMContext, **kwargs):
+async def ask_cb(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(AskForm.ask)
-
-
     await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=question_img,
-            caption='Напишите ваш вопрос:',
-            parse_mode='HTML',
-        ),
+        types.InputMediaPhoto(media=QUESTION_IMG, caption='Напишите ваш вопрос:'),
         reply_markup=keyboard_back,
     )
 
-
 @router.message(AskForm.ask)
-@login_required
-async def ask_run(message: types.Message, session: AsyncSession, client: Customers, state: FSMContext, *args, **kwargs):
-    admin = await Customers.find_by_phone_number(9969290700, session)
-    await message.bot.send_message(
-        admin.telegram_id,
-        f'Получен вопрос от {client.name} (контакт: {client.phone_number}):\n{message.text}')
-    await state.clear()
-    await message.answer('Ваш вопрос принят!')
-    await message.answer('Пожалуйста, ожидайте ответа', reply_markup=keyboard_back)
+async def ask_run(message: types.Message, session: AsyncSession, state: FSMContext):
+    client = await Customers.find(message.chat.id, session)
+    if not client: return
 
+    for admin_id in settings.ADMIN_IDS:
+        try:
+            await message.bot.send_message(
+                admin_id,
+                f'Получен вопрос от {client.name} (контакт: {client.phone_number}):\n{message.text}'
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify admin {admin_id}: {e}")
+
+    await state.clear()
+    await message.answer('Ваш вопрос принят! Пожалуйста, ожидайте ответа.', reply_markup=keyboard_back)
 
 @router.callback_query(F.data == 'social')
-async def social(call: types.CallbackQuery, *args, **kwargs):
-    text = "<b>Социальные сети:</b>"
-
+async def social_cb(call: types.CallbackQuery):
     await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=social_img,
-            caption=text,
-            parse_mode='HTML',
-        ),
+        types.InputMediaPhoto(media=SOCIAL_IMG, caption="<b>Социальные сети:</b>", parse_mode='HTML'),
         reply_markup=keyboard_social,
     )
 
-
 @router.callback_query(F.data == 'review')
-@login_required_callback
-async def review(call: types.CallbackQuery, *args, **kwargs):
-    text = "<b>Оставить отзыв:</b>"
-
+async def review_cb(call: types.CallbackQuery):
     await call.message.edit_media(
-        types.InputMediaPhoto(
-            media=review_img,
-            caption=text,
-            parse_mode='HTML',
-        ),
+        types.InputMediaPhoto(media=REVIEW_IMG, caption="<b>Оставить отзыв:</b>", parse_mode='HTML'),
         reply_markup=keyboard_review,
     )
 
-
 @router.message(Command('placeQR'))
-async def place_qr(message: types.Message, session: AsyncSession):
-
+async def place_qr_cmd(message: types.Message, session: AsyncSession):
     places = await session.scalars(select(Places))
     for place in places.all():
-        await message.answer(text=place.name)
         crypt = encode_json({'place': place.id})
-        link = await create_start_link(message.bot, '')
-        await message.answer(text=link + crypt)
-
+        link = await create_start_link(message.bot, crypt, encode=False)
+        await message.answer(text=f"{place.name}: {link}")
 
 @router.message(Command('sendMessage'))
-@admin_required
-async def test(message: types.Message, session: AsyncSession, client: Customers, state: FSMContext, *args, **kwargs):
-    await state.set_state(MessageForm.message)  # Устанавливаем состояние
+async def send_message_cmd(message: types.Message, state: FSMContext):
+    if message.from_user.id not in settings.ADMIN_IDS:
+        return
+    await state.set_state(MessageForm.message)
     await message.answer('Введите текст рассылки:')
 
-
 @router.message(MessageForm.message)
-async def test_run(message: types.Message, session: AsyncSession, state: FSMContext, *args, **kwargs):
-    # Сохраняем текст рассылки в FSM
+async def message_text_run(message: types.Message, state: FSMContext):
     await state.update_data(message_text=message.text)
-
-    await message.answer(
-        'Подтвердите текст рассылки:\n' + message.text,
-        parse_mode='HTML',
-        reply_markup=keyboard_confirm,
-    )
-
-    # Переходим в состояние подтверждения
+    await message.answer(f'Подтвердите текст рассылки:\n{message.text}', reply_markup=keyboard_confirm)
     await state.set_state(MessageForm.confirm)
 
-
 @router.callback_query(MessageForm.confirm)
-async def confirm_run(call: types.CallbackQuery, session: AsyncSession, state: FSMContext, *args, **kwargs):
-    # Получаем данные из состояния FSM
+async def confirm_message_cb(call: types.CallbackQuery, session: AsyncSession, state: FSMContext):
     data = await state.get_data()
-    message_text = data.get("message_text", "")
+    text = data.get("message_text", "")
 
     if call.data == 'yes':
-        await call.message.answer(
-            f'Рассылка отправлена. Текст: \n{message_text}',
-            parse_mode='HTML',
-            reply_markup=keyboard_back,
-        )
-        for user in await session.scalars(select(Customers)):
+        await call.message.answer(f'Рассылка запущена.')
+        users = await session.scalars(select(Customers))
+        for user in users.all():
             try:
-                await call.bot.send_message(user.telegram_id, message_text)
+                await call.bot.send_message(user.telegram_id, text)
             except Exception as e:
-                logger.error(
-                    f"Error sending message to user {user.telegram_id}: {e}")
-
-        await state.clear()  # Завершаем FSM
+                logger.error(f"Error sending to {user.telegram_id}: {e}")
+        await state.clear()
     elif call.data == 'no':
-        await call.message.answer(
-            'Введите текст рассылки снова:',
-            parse_mode='HTML',
-            reply_markup=clean_keyboard,
-        )
-        # Возвращаемся в состояние ввода
+        await call.message.answer('Введите текст рассылки снова:')
         await state.set_state(MessageForm.message)
-    else:  # Если нажали "Отменить"
-        await call.message.answer(
-            'Рассылка отменена',
-            parse_mode='HTML',
-            reply_markup=keyboard_back,
-        )
-        await state.clear()  # Завершаем FSM
+    else:
+        await call.message.answer('Рассылка отменена')
+        await state.clear()
     await call.answer()
 
-
 @router.message(Command("update_menu"))
-@admin_required
-async def cmd_update_menu(message: types.Message, session: AsyncSession, client: Customers, state: FSMContext, *args, **kwargs):
-    """
-    Шаг 1. Пользователь вводит /update_menu — показываем кнопки выбора меню.
-    """
+async def cmd_update_menu(message: types.Message, state: FSMContext):
+    if message.from_user.id not in settings.ADMIN_IDS:
+        return
     await state.clear()
-    
-    await message.answer(
-        "Выберите, какое меню хотите обновить:",
-        reply_markup=kb,
-    )
+    await message.answer("Выберите, какое меню хотите обновить:", reply_markup=kb)
     await state.set_state(UpdateMenuStates.choosing)
-
-
-# @router.message(StateFilter(UpdateMenuStates.choosing), F.text.in_(["Аптекарский", "Коменданский", "Бородинская"]))
-# async def process_menu_choice(message: types.Message, state: FSMContext):
-#     """
-#     Шаг 2. Пользователь нажал на одну из кнопок — запомним выбор и попросим прислать файл.
-#     """
-#     choice = message.text  # будет ровно один из трёх
-#     # Сохраним в FSMContext выбор пользователя, чтобы потом понять, куда сохранять
-#     await state.update_data(menu_choice=choice)
-
-#     # Сними клавиатуру, больше не нужна
-#     await message.answer(
-#         f"Вы выбрали «{choice}». Пришлите, пожалуйста, файл с новым меню (jpg или png).",
-#         reply_markup=types.ReplyKeyboardRemove(),
-#     )
-#     await state.set_state(UpdateMenuStates.waiting_file)
-
 
 @router.message(StateFilter(UpdateMenuStates.choosing), F.text.in_(["Аптекарский", "Коменданский", "Бородинская"]))
 async def process_menu_choice(message: types.Message, state: FSMContext):
     choice = message.text
     await state.update_data(menu_choice=choice)
 
-    place_map = {
-        "Аптекарский": "aptekarskaya",
-        "Коменданский": "komendantskaya",
-        "Бородинская": "borodinskaya",
-    }
+    place_map = {"Аптекарский": "aptekarskaya", "Коменданский": "komendantskaya", "Бородинская": "borodinskaya"}
     place_slug = place_map[choice]
 
-    # ✅ ОЧИСТКА старых страниц (чтобы новое меню начиналось с 001)
     place_dir = ensure_place_dir(place_slug)
     for p in place_dir.glob("*.webp"):
         p.unlink()
 
     await message.answer(
-        f"Вы выбрали «{choice}».\n"
-        f"Пришлите фото (jpg/png) или один/несколько PDF.\n"
-        f"Можно отправлять много сообщений подряд.\n"
-        f"Когда закончите — нажмите «✅ Готово».",
-        reply_markup=kb_menu_upload,
+        f"Вы выбрали «{choice}». Пришлите фото или PDF. По окончании нажмите «✅ Готово».",
+        reply_markup=kb_menu_upload
     )
     await state.set_state(UpdateMenuStates.waiting_file)
-
-
-@router.message(StateFilter(UpdateMenuStates.choosing))
-async def invalid_choice(message: types.Message):
-    """
-    Если пользователь ввёл текст не из списка, попросим выбрать снова.
-    """
-    await message.answer("Нужно выбрать одну из кнопок: Аптекарский, Коменданский или Бородинская.")
-
-# @router.message(StateFilter(UpdateMenuStates.waiting_file), F.content_type.in_({"photo", "document"}))
-# async def process_new_file(message: types.Message, state: FSMContext):
-#     """
-#     Шаг 3. Пользователь прислал файл. Если это картинка (jpg/png) — конвертим и сохраняем.
-#     Если это PDF — рендерим первую страницу и сохраняем как webp.
-#     """
-#     data = await state.get_data()
-#     choice: str = data.get("menu_choice")  # выбор пользователя
-
-#     # Словарь, куда сохраняем в зависимости от выбора:
-#     mapping = {
-#         "Аптекарский": "files/menu_a.webp",
-#         "Коменданский": "files/menu_k.webp",
-#         "Бородинская": "files/menu_b.webp",
-#     }
-#     target_path = mapping.get(choice)
-#     if not target_path:
-#         await message.answer("Не удалось определить, куда сохранять файл. Попробуйте ещё раз.")
-#         await state.clear()
-#         return
-
-#     # 5.1) Решаем, что именно прислали:
-#     is_pdf = False
-#     if message.photo:
-#         # Это обычная картинка
-#         file_id = message.photo[-1].file_id
-#         orig_filename = f"{file_id}.jpg"
-#     else:
-#         # Это document. Проверяем MIME и расширение
-#         doc = message.document
-#         mime = doc.mime_type or ""
-#         name = doc.file_name or ""
-#         # Если PDF (mime application/pdf или имя заканчивается на .pdf)
-#         if mime == "application/pdf" or name.lower().endswith(".pdf"):
-#             is_pdf = True
-#             file_id = doc.file_id
-#             orig_filename = name if name.lower().endswith(".pdf") else f"{file_id}.pdf"
-#         else:
-#             # Если не PDF и не картинка изначально (PNG/JPEG)
-#             if not mime.startswith("image/"):
-#                 await message.answer("Нужно прислать изображение (jpg/png) или PDF-файл.")
-#                 return
-#             file_id = doc.file_id
-#             orig_filename = name
-
-#     # 5.2) Скачиваем файл во временную папку tmp/
-#     os.makedirs("tmp", exist_ok=True)
-#     tmp_path = os.path.join("tmp", orig_filename)
-
-#     file = await message.bot.get_file(file_id)
-#     await message.bot.download_file(file.file_path, destination=tmp_path)
-
-#     # 5.3) Конвертация
-#     try:
-#         # Если это PDF, рендерим первую страницу через PyMuPDF
-#         if is_pdf:
-#             # Открываем PDF
-#             pdf_doc = fitz.open(tmp_path)
-#             if pdf_doc.page_count < 1:
-#                 raise RuntimeError("PDF пустой или не удалось прочитать страницы")
-#             page = pdf_doc.load_page(0)  # первая страница (индекс 0)
-#             # Рендерим страницу в pixmap (по умолчанию 72 DPI)
-#             mat = fitz.Matrix(2, 2)  # можно увеличить DPI, например, 144; здесь увеличиваем в 2 раза
-#             pix = page.get_pixmap(matrix=mat, alpha=False)
-#             # Сохраняем временный PNG: fitz может отдавать .png-байты
-#             tmp_img_path = tmp_path.rsplit(".", 1)[0] + ".png"
-#             pix.save(tmp_img_path)
-
-#             # Теперь открываем через PIL и конвертируем в WebP
-#             img = Image.open(tmp_img_path).convert("RGB")
-#             os.makedirs(os.path.dirname(target_path), exist_ok=True)
-#             img.save(target_path, format="WEBP", quality=85)
-
-#             # Удаляем промежуточный PNG
-#             os.remove(tmp_img_path)
-#             pdf_doc.close()
-
-#         else:
-#             # Обычное изображение (jpg/png)
-#             img = Image.open(tmp_path).convert("RGB")
-#             os.makedirs(os.path.dirname(target_path), exist_ok=True)
-#             img.save(target_path, format="WEBP", quality=85)
-
-#     except Exception as e:
-#         await message.answer(f"Не удалось сконвертировать файл: {e}")
-#         # Чистим временный файл
-#         try:
-#             os.remove(tmp_path)
-#         except:
-#             pass
-#         await state.clear()
-#         return
-
-#     # 5.4) Удаляем временный файл PDF или исходное изображение
-#     try:
-#         os.remove(tmp_path)
-#     except:
-#         pass
-
-#     # 5.5) Подтверждаем и показываем получившийся WebP (опционально)
-#     await message.answer(f"Меню «{choice}» обновлено успешно! Вот как оно теперь выглядит:")
-#     await message.answer_photo(FSInputFile(target_path))
-
-#     # Сбрасываем состояние
-#     await state.clear()
 
 @router.message(StateFilter(UpdateMenuStates.waiting_file), F.content_type.in_({"photo", "document"}))
 async def process_new_file(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    choice: str = data.get("menu_choice")
-
-    place_map = {
-        "Аптекарский": "aptekarskaya",
-        "Коменданский": "komendantskaya",
-        "Бородинская": "borodinskaya",
-    }
+    choice = data.get("menu_choice")
+    place_map = {"Аптекарский": "aptekarskaya", "Коменданский": "komendantskaya", "Бородинская": "borodinskaya"}
     place_slug = place_map.get(choice)
-    if not place_slug:
-        await message.answer("Не удалось определить кофейню. Начните заново: /update_menu",
-                             reply_markup=types.ReplyKeyboardRemove())
-        await state.clear()
-        return
+
+    if not place_slug: return
 
     out_dir = str(ensure_place_dir(place_slug))
-
-    # определить file_id + тип
     is_pdf = False
     if message.photo:
         file_id = message.photo[-1].file_id
-        orig_filename = f"{file_id}.jpg"
+        ext = "jpg"
     else:
         doc = message.document
-        mime = doc.mime_type or ""
-        name = doc.file_name or ""
-        if mime == "application/pdf" or name.lower().endswith(".pdf"):
-            is_pdf = True
-            file_id = doc.file_id
-            orig_filename = name if name.lower().endswith(".pdf") else f"{file_id}.pdf"
-        else:
-            if not mime.startswith("image/"):
-                await message.answer("Нужно прислать изображение (jpg/png) или PDF.")
-                return
-            file_id = doc.file_id
-            orig_filename = name or f"{file_id}.img"
+        file_id = doc.file_id
+        is_pdf = (doc.mime_type == "application/pdf" or doc.file_name.lower().endswith(".pdf"))
+        ext = "pdf" if is_pdf else "img"
 
+    tmp_path = f"tmp/{file_id}.{ext}"
     os.makedirs("tmp", exist_ok=True)
-    tmp_path = os.path.join("tmp", orig_filename)
 
     file = await message.bot.get_file(file_id)
-    await message.bot.download_file(file.file_path, destination=tmp_path)
+    await message.bot.download_file(file.file_path, tmp_path)
 
-    # ✅ LOCK на конкретную кофейню, чтобы next_index не считался параллельно
     lock = MENU_UPLOAD_LOCKS.setdefault(place_slug, asyncio.Lock())
+    async with lock:
+        existing = list_pages(place_slug)
+        next_index = len(existing) + 1
+        if is_pdf:
+            added = pdf_to_webp_pages(tmp_path, out_dir, next_index)
+        else:
+            dst = os.path.join(out_dir, f"{next_index:03d}.webp")
+            save_image_as_webp(tmp_path, dst)
+            added = 1
 
-    try:
-        async with lock:
-            existing = list_pages(place_slug)
-            next_index = len(existing) + 1
-
-            if is_pdf:
-                added = pdf_to_webp_pages(tmp_path, out_dir=out_dir, start_index=next_index)
-            else:
-                dst = os.path.join(out_dir, f"{next_index:03d}.webp")
-                save_image_as_webp(tmp_path, dst)
-                added = 1
-
-            total_now = len(list_pages(place_slug))
-
-        await message.answer(f"Добавлено страниц: {added}. Всего страниц сейчас: {total_now}.")
-    except Exception as e:
-        await message.answer(f"Не удалось обработать файл: {e}")
-    finally:
-        try:
-            os.remove(tmp_path)
-        except:
-            pass
-
-
+    os.remove(tmp_path)
+    await message.answer(f"Добавлено страниц: {added}. Всего: {len(list_pages(place_slug))}")
 
 @router.message(StateFilter(UpdateMenuStates.waiting_file), F.text == "✅ Готово")
 async def finish_menu_upload(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    choice: str = data.get("menu_choice")
-
-    place_map = {
-        "Аптекарский": "aptekarskaya",
-        "Коменданский": "komendantskaya",
-        "Бородинская": "borodinskaya",
-    }
+    choice = data.get("menu_choice")
+    place_map = {"Аптекарский": "aptekarskaya", "Коменданский": "komendantskaya", "Бородинская": "borodinskaya"}
     place_slug = place_map.get(choice)
-    pages = list_pages(place_slug) if place_slug else []
+    pages = list_pages(place_slug)
 
     await state.clear()
-    await message.answer("Готово ✅", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("Обновление завершено", reply_markup=types.ReplyKeyboardRemove())
 
-    if not pages:
-        await message.answer("Но страниц меню не найдено (ничего не загрузили).")
-        return
+    if pages:
+        await message.answer_photo(
+            FSInputFile(str(pages[0])),
+            caption=f"Меню {choice}",
+            reply_markup=build_menu_nav_kb(place_slug, 1, len(pages))
+        )
 
-    # показываем первую страницу
-    await message.answer_photo(
-        FSInputFile(str(pages[0])),
-        caption=f"Меню кофейни {PLACE_TITLE.get(place_slug, place_slug)}",
-        reply_markup=build_menu_nav_kb(place_slug, 1, len(pages))
+@router.callback_query(F.data == "back")
+async def back_cb(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_media(
+        types.InputMediaPhoto(media=PHOTO_NORD, caption='Выберите раздел'),
+        reply_markup=keyboard_main
     )
-
-@router.message(StateFilter(UpdateMenuStates.waiting_file), F.text == "❌ Отмена")
-async def cancel_menu_upload(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Отменено.", reply_markup=types.ReplyKeyboardRemove())
-
-
-
-@router.message(StateFilter(UpdateMenuStates.waiting_file))
-async def invalid_file(message: types.Message):
-    await message.answer("Пожалуйста, пришлите фото (jpg/png) или PDF. Затем нажмите «✅ Готово».")
