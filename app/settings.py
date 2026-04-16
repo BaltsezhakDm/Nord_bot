@@ -5,7 +5,13 @@ class Settings:
     # Telegram
     BOT_TOKEN: str = os.getenv('token', '')
     WEBHOOK_URL: Optional[str] = os.getenv('webhook_url')
-    ADMIN_IDS: List[int] = [9969290700]  # Извлечено из кода
+
+    @property
+    def ADMIN_IDS(self) -> List[int]:
+        ids_str = os.getenv('ADMIN_IDS', '')
+        if not ids_str:
+            return []
+        return [int(x.strip()) for x in ids_str.split(',') if x.strip().isdigit()]
 
     # QuickResto API
     LOGIN_API: str = os.getenv('login_api', '')
@@ -16,13 +22,15 @@ class Settings:
     PASSWORD_LK: str = os.getenv('password_lk', '')
 
     # Database
-    USER_DB: str = os.getenv('user_db', 'postgres')
-    PASSWORD_DB: str = os.getenv('password_db', 'postgres')
-    DATABASE: str = os.getenv('database', 'postgres')
-    HOST_DB: str = os.getenv('host_db', 'localhost')
+    USER_DB: str = os.getenv('user_db', '')
+    PASSWORD_DB: str = os.getenv('password_db', '')
+    DATABASE: str = os.getenv('database', '')
+    HOST_DB: str = os.getenv('host_db', '')
 
     @property
     def DATABASE_URL(self) -> str:
+        if not self.USER_DB:
+            return ""
         return f"postgresql+asyncpg://{self.USER_DB}:{self.PASSWORD_DB}@{self.HOST_DB}/{self.DATABASE}"
 
     # Redis
@@ -33,8 +41,8 @@ class Settings:
     # RabbitMQ
     RABBITMQ_HOST: str = os.getenv('RABBITMQ_HOST', 'localhost')
     RABBITMQ_PORT: int = int(os.getenv('RABBITMQ_PORT', 5672))
-    RABBITMQ_USER: str = os.getenv('RABBITMQ_USER', 'user')
-    RABBITMQ_PASSWORD: str = os.getenv('RABBITMQ_PASSWORD', 'password')
+    RABBITMQ_USER: str = os.getenv('RABBITMQ_USER', '')
+    RABBITMQ_PASSWORD: str = os.getenv('RABBITMQ_PASSWORD', '')
 
     # Security
     CRYPT_KEY: str = os.getenv('crypt_key', '')
