@@ -19,29 +19,32 @@ from utils import get_connector
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Инициализация бота с поддержкой прокси
-if settings.PROXY_URL:
-    if settings.PROXY_URL.startswith('socks'):
-        connector = ProxyConnector.from_url(settings.PROXY_URL)
-        session = AiohttpSession(connector=connector)
+async def init_bot():
+    # Инициализация бота с поддержкой прокси
+    if settings.PROXY_URL:
+        if settings.PROXY_URL.startswith('socks'):
+            connector = ProxyConnector.from_url(settings.PROXY_URL)
+            session = AiohttpSession(connector=connector)
+        else:
+            session = AiohttpSession(proxy=settings.PROXY_URL)
     else:
-        session = AiohttpSession(proxy=settings.PROXY_URL)
-else:
-    session = None
+        session = None
 
-bot = Bot(token=settings.BOT_TOKEN, session=session)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+    bot = Bot(token=settings.BOT_TOKEN, session=session)
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
 
-# Регистрация middleware
-dp.update.middleware(DbSessionMiddleware())
-dp.update.middleware(LoggingMiddleware())
-dp.update.middleware(ErrorHandlingMiddleware())
+    # Регистрация middleware
+    dp.update.middleware(DbSessionMiddleware())
+    dp.update.middleware(LoggingMiddleware())
+    dp.update.middleware(ErrorHandlingMiddleware())
 
-# Подключение роутеров
-dp.include_router(router)
+    # Подключение роутеров
+    dp.include_router(router)
 
-async def on_startup():
+    return bot, dp
+
+async def on_startup(bot: Bot):
     db_session = await get_db_session()
     places = ['Комендантский 65', 'Аптекарский 5', 'Бородинская 2\\86']
     for place_name in places:
@@ -51,7 +54,8 @@ async def on_startup():
         await bot.set_webhook(settings.WEBHOOK_URL)
     logging.info("Bot started")
 
-def main() -> None:
+async def main() -> None:
+    bot, dp = await init_bot()
     dp.startup.register(on_startup)
     app = web.Application()
 
@@ -62,9 +66,19 @@ def main() -> None:
     webhook_requests_handler.register(app, path='/telegram')
 
     setup_application(app, dp, bot=bot)
-    web.run_app(app, host='0.0.0.0', port=8000)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    try:
+        site = web.TCPSite(runner, host='0.0.0.0', port=8000)
+        await site.start()
+        logging.info("Bot started on 0.0.0.0:8000")
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
 
 async def debug() -> None:
+    bot, dp = await init_bot()
     await bot.delete_webhook()
     db_session = await get_db_session()
     places = ['Комендантский 65', 'Аптекарский 5', 'Бородинская 2\\86']
@@ -78,4 +92,4 @@ if __name__ == '__main__':
     if settings.DEBUG:
         asyncio.run(debug())
     else:
-        main()
+        asyncio.run(main())
