@@ -20,7 +20,7 @@ import fitz
 from api import CRM, Office, load_cookies
 from model import Customers, Places, LogEntry
 from fsm import Form, AskForm, MessageForm, UpdateMenuStates
-from utils import encode_user_id, encode_json, check_referal
+from utils import encode_user_id, encode_json, check_referal, get_connector
 from keyboards import (
     keyboard_main, keyboard_back, keyboard_menu,
     keyboard_social, keyboard_review, clean_keyboard,
@@ -83,7 +83,7 @@ async def notify_admins_about_referral(bot, user_id):
 
 
 async def get_api_clients():
-    session = aiohttp.ClientSession()
+    session = aiohttp.ClientSession(connector=get_connector())
     api_client = CRM(login=settings.LOGIN_API, password=settings.PASSWORD_API, session=session)
     lk_client = Office(login=settings.LOGIN_LK, password=settings.PASSWORD_LK, session=session)
     await load_cookies(session, lk_client.cookie_file)
@@ -209,7 +209,7 @@ async def contact(message: types.Message, session: AsyncSession, state: FSMConte
     data = await state.get_data()
     phone_number = int(message.contact.phone_number[-10:])
 
-    async with aiohttp.ClientSession() as http_session:
+    async with aiohttp.ClientSession(connector=get_connector()) as http_session:
         api_client = CRM(settings.LOGIN_API, settings.PASSWORD_API, http_session)
         lk_client = Office(settings.LOGIN_LK, settings.PASSWORD_LK, http_session)
         await load_cookies(http_session, lk_client.cookie_file)
@@ -310,7 +310,7 @@ async def show_qr_cb(call: types.CallbackQuery, session: AsyncSession):
     client = await Customers.find(call.from_user.id, session)
     if not client: return
 
-    async with aiohttp.ClientSession() as http_session:
+    async with aiohttp.ClientSession(connector=get_connector()) as http_session:
         api_client = CRM(settings.LOGIN_API, settings.PASSWORD_API, http_session)
         qr = api_client.qr_code(client.phone_number)
         await call.message.edit_media(
@@ -323,7 +323,7 @@ async def show_balance_cb(call: types.CallbackQuery, session: AsyncSession):
     client = await Customers.find(call.from_user.id, session)
     if not client: return
 
-    async with aiohttp.ClientSession() as http_session:
+    async with aiohttp.ClientSession(connector=get_connector()) as http_session:
         api_client = CRM(settings.LOGIN_API, settings.PASSWORD_API, http_session)
         balance = await api_client.get_balance(client.phone_number)
         await call.message.edit_media(
@@ -341,7 +341,7 @@ async def show_history_cb(call: types.CallbackQuery, session: AsyncSession):
     if history_raw:
         history = json.loads(history_raw)
     else:
-        async with aiohttp.ClientSession() as http_session:
+        async with aiohttp.ClientSession(connector=get_connector()) as http_session:
             api_client = CRM(settings.LOGIN_API, settings.PASSWORD_API, http_session)
             history = await api_client.get_history(client.phone_number)
             r.set(history_key, json.dumps(history), ex=120)
