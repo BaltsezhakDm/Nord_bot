@@ -71,6 +71,17 @@ MENU_UPLOAD_LOCKS: dict[str, asyncio.Lock] = {}
 # или создавать временные. В данном случае, так как бот асинхронный,
 # мы добавим создание сессии CRM/Office в роутеры.
 
+async def notify_admins_about_referral(bot, user_id):
+    for admin_id in settings.ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                f'Пополнить бонусы для пользователя ID: {user_id}'
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify admin {admin_id} about referral: {e}")
+
+
 async def get_api_clients():
     session = aiohttp.ClientSession()
     api_client = CRM(login=settings.LOGIN_API, password=settings.PASSWORD_API, session=session)
@@ -245,8 +256,7 @@ async def contact(message: types.Message, session: AsyncSession, state: FSMConte
                     await lk_client.add_credit(new_client.get('id'), 100)
 
                     if data.get('user_id'):
-                        from tasks import send_to_queue
-                        send_to_queue(data.get('user_id'))
+                        asyncio.create_task(notify_admins_about_referral(message.bot, data.get('user_id')))
 
             await state.clear()
             await message.answer('Успешная регистрация!', reply_markup=clean_keyboard)
