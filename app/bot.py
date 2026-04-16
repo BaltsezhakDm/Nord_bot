@@ -16,7 +16,6 @@ from settings import settings
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logging.getLogger('pika').setLevel(logging.ERROR)
 
 # Инициализация бота с поддержкой прокси
 session = AiohttpSession(proxy=settings.PROXY_URL) if settings.PROXY_URL else None

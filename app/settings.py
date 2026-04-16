@@ -38,12 +38,6 @@ class Settings:
     REDIS_PORT: int = int(os.getenv('redis_port', 6379))
     REDIS_DB: int = int(os.getenv('redis_db', 3))
 
-    # RabbitMQ
-    RABBITMQ_HOST: str = os.getenv('RABBITMQ_HOST', 'localhost')
-    RABBITMQ_PORT: int = int(os.getenv('RABBITMQ_PORT', 5672))
-    RABBITMQ_USER: str = os.getenv('RABBITMQ_USER', '')
-    RABBITMQ_PASSWORD: str = os.getenv('RABBITMQ_PASSWORD', '')
-
     # Security
     CRYPT_KEY: str = os.getenv('crypt_key', '')
 
