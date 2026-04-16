@@ -1,3 +1,6 @@
-alembic upgrade head
+#!/bin/bash
+set -e
 
-python3 bot.py
+uv run alembic upgrade head
+
+uv run python app/bot.py

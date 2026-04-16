@@ -8,6 +8,7 @@ import pickle
 import logging
 from aiogram.types import FSInputFile
 from typing import Optional, Any, Union
+from aiohttp_socks import ProxyConnector
 
 try:
     from settings import settings
@@ -56,14 +57,20 @@ class Api:
         except Exception:
             return date
 
+    def _get_proxy_kwargs(self):
+        if self.proxy and (not self.session.connector or not isinstance(self.session.connector, ProxyConnector)):
+            return {'proxy': self.proxy}
+        return {}
+
     async def _get(self, module: str, params=None, json_format=True):
+        proxy_kwargs = self._get_proxy_kwargs()
         try:
             async with self.session.get(
                 url=self.URL + module,
                 auth=aiohttp.BasicAuth(self.login, self.password),
                 headers=self.headers,
                 params=params,
-                proxy=self.proxy
+                **proxy_kwargs
             ) as response:
                 if json_format:
                     data = await response.json()
@@ -78,6 +85,7 @@ class Api:
 
     async def _post(self, module: str, data=None, params=None, json_format=True):
         '''Post запрос в API QuickResto и возврат в json формате'''
+        proxy_kwargs = self._get_proxy_kwargs()
         try:
             async with self.session.post(
                 url=self.URL + module,
@@ -85,7 +93,7 @@ class Api:
                 headers=self.headers,
                 json=data,
                 params=params,
-                proxy=self.proxy
+                **proxy_kwargs
             ) as response:
                 if json_format:
                     return await response.json()
@@ -98,14 +106,20 @@ class Api:
 class Office:
     def __init__(self, login, password, session: aiohttp.ClientSession) -> None:
         self.error_count = 0
-        self.URL = f'https://{login}.quickresto.ru/platform/' # Исправлено: используем логин для URL
+        self.URL = f'https://{login}.quickresto.ru/platform/'
         self.session = session
         self.login = login
         self.password = password
         self.proxy = settings.PROXY_URL
         self.cookie_file = 'cookies.pkl'
 
+    def _get_proxy_kwargs(self):
+        if self.proxy and (not self.session.connector or not isinstance(self.session.connector, ProxyConnector)):
+            return {'proxy': self.proxy}
+        return {}
+
     async def log_in(self):
+        proxy_kwargs = self._get_proxy_kwargs()
         try:
             data = {
                 'j_username': self.login,
@@ -120,7 +134,7 @@ class Office:
                     'Accept': 'application/json, text/plain, */*',
                     'Content-Type': 'application/x-www-form-urlencoded',
                 },
-                proxy=self.proxy
+                **proxy_kwargs
             ) as resp:
                 if resp.status == 401:
                     logger.error('Login failed: Invalid login or password')
@@ -145,11 +159,12 @@ class Office:
             "key": str(phone_number)
         }
 
+        proxy_kwargs = self._get_proxy_kwargs()
         async with self.session.post(
             self.URL + 'data/crm.customer.tokens/create',
             params=params,
             json=data,
-            proxy=self.proxy
+            **proxy_kwargs
         ) as response:
             if response.status == 401 and self.error_count == 0:
                 self.error_count += 1
@@ -170,10 +185,11 @@ class Office:
             "businessDayOffsetInMs": 0,
             "timeZone": -180
         }
+        proxy_kwargs = self._get_proxy_kwargs()
         async with self.session.post(
             url=self.URL + url,
             params=params,
-            proxy=self.proxy
+            **proxy_kwargs
         ) as response:
             if response.status == 401 and self.error_count == 0:
                 self.error_count += 1
@@ -215,11 +231,12 @@ class Office:
                 "ownerContextClassName": "ru.edgex.quickresto.modules.crm.customer.CrmCustomer"
             }
         }
+        proxy_kwargs = self._get_proxy_kwargs()
         async with self.session.post(
             url=self.URL + url,
             params=params,
             json=data,
-            proxy=self.proxy
+            **proxy_kwargs
         ) as response:
             if response.status == 200:
                 return await response.json()

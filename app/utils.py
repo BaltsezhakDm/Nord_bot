@@ -1,6 +1,8 @@
 from hashids import Hashids
 from functools import wraps
 import logging
+import aiohttp
+from aiohttp_socks import ProxyConnector
 from aiogram.types import Message
 import os
 import json
@@ -35,6 +37,12 @@ def decode_json(encoded_str):
         return json.loads(json_str)
     except Exception:
         return None
+
+def get_connector():
+    if settings.PROXY_URL:
+        if settings.PROXY_URL.startswith('socks'):
+            return ProxyConnector.from_url(settings.PROXY_URL)
+    return None
 
 def check_referal(func):
     @wraps(func)

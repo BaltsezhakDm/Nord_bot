@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp import web
+from aiohttp_socks import ProxyConnector
 
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
@@ -13,12 +14,21 @@ from model import Places
 from middleware import DbSessionMiddleware, LoggingMiddleware, ErrorHandlingMiddleware
 from endpoints import router
 from settings import settings
+from utils import get_connector
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Инициализация бота с поддержкой прокси
-session = AiohttpSession(proxy=settings.PROXY_URL) if settings.PROXY_URL else None
+if settings.PROXY_URL:
+    if settings.PROXY_URL.startswith('socks'):
+        connector = ProxyConnector.from_url(settings.PROXY_URL)
+        session = AiohttpSession(connector=connector)
+    else:
+        session = AiohttpSession(proxy=settings.PROXY_URL)
+else:
+    session = None
+
 bot = Bot(token=settings.BOT_TOKEN, session=session)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
